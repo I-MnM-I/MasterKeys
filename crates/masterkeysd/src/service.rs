@@ -87,7 +87,14 @@ impl DaemonCore {
             warn!("profile bindings: {warning}");
         }
         self.keys.set_bindings_active(!compiled.is_empty());
-        self.bindings.send_replace(compiled);
+        // Only real changes notify: an unchanged set must not resume remapping after an escape-chord stop.
+        self.bindings.send_if_modified(|current| {
+            let changed = *current != compiled;
+            if changed {
+                *current = compiled;
+            }
+            changed
+        });
     }
 
     fn mark_dirty(&self) {

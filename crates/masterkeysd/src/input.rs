@@ -50,6 +50,25 @@ pub fn all_released(states: &[Vec<u16>]) -> bool {
     states.iter().all(Vec::is_empty)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum GrabDecision {
+    Grab,
+    Wait,
+    GiveUp,
+}
+
+/// Grab only once no key is held: grabbing under a held key would leave it stuck down on the desktop.
+/// After `RELEASE_WAIT`, give up and try again later rather than grab anyway.
+pub fn grab_decision(states: &[Vec<u16>], waited: Duration) -> GrabDecision {
+    if all_released(states) {
+        GrabDecision::Grab
+    } else if waited < RELEASE_WAIT {
+        GrabDecision::Wait
+    } else {
+        GrabDecision::GiveUp
+    }
+}
+
 /// Where remapped key events go: the virtual keyboard, or a list in tests.
 pub trait KeySink {
     fn emit(&mut self, events: &[KeyEvent]) -> io::Result<()>;
@@ -88,6 +107,8 @@ pub enum Ended {
     Stopped,
     /// The escape chord fired.
     Chord,
+    /// A key stayed held, so the grab was put off.
+    KeysHeld,
     Error(String),
 }
 
@@ -206,10 +227,11 @@ async fn grab_session(
             .iter()
             .map(|d| d.get_key_state().map(|s| s.iter().map(|k| k.code()).collect()).unwrap_or_default())
             .collect();
-        if all_released(&states) || waited.elapsed() >= RELEASE_WAIT {
-            break;
+        match grab_decision(&states, waited.elapsed()) {
+            GrabDecision::Grab => break,
+            GrabDecision::Wait => tokio::time::sleep(Duration::from_millis(50)).await,
+            GrabDecision::GiveUp => return Ended::KeysHeld,
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     for device in &mut targets {
         if let Err(e) = device.grab() {
@@ -298,7 +320,7 @@ pub async fn run_input(core: DaemonCore, conn: zbus::Connection, mut want: watch
                 // Edits made while grabbed were applied by the engine; don't count them as a reset.
                 bindings.mark_unchanged();
                 match ended {
-                    Ended::Unplugged => true,
+                    Ended::Unplugged | Ended::KeysHeld => true,
                     Ended::Stopped => false,
                     Ended::Chord => {
                         warn!("{CHORD_MESSAGE}");
@@ -380,6 +402,14 @@ mod tests {
     fn all_released_checks_every_node() {
         assert!(all_released(&[vec![], vec![]]));
         assert!(!all_released(&[vec![], vec![30]]));
+    }
+
+    #[test]
+    fn never_grabs_while_a_key_is_held() {
+        let held = [vec![17u16]];
+        assert_eq!(grab_decision(&held, Duration::ZERO), GrabDecision::Wait);
+        assert_eq!(grab_decision(&held, RELEASE_WAIT), GrabDecision::GiveUp);
+        assert_eq!(grab_decision(&[vec![]], RELEASE_WAIT), GrabDecision::Grab);
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 //! Named lighting profiles and where they live on disk.
 
 use crate::LightingState;
-use crate::bindings::Macro;
+use crate::bindings::{Macro, canonical_key, canonical_target};
 use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -181,8 +181,8 @@ fn load_file(path: &Path) -> io::Result<Profile> {
             name: f.name,
             lighting: LightingState { effect: f.effect, brightness: f.brightness },
             executables: f.executables,
-            remaps: f.remaps,
-            macros: f.macros,
+            remaps: canonical_remaps(f.remaps),
+            macros: f.macros.into_iter().map(|(k, m)| (canonical_key(&k).unwrap_or(k), m)).collect(),
         });
     }
     match toml::from_str::<LegacyFile>(&text) {
@@ -197,6 +197,18 @@ fn load_file(path: &Path) -> io::Result<Profile> {
             toml::from_str::<ProfileFile>(&text).err().map_or_else(String::new, |e| e.to_string()),
         )),
     }
+}
+
+/// Hand-written key names in canonical spelling (`Caps_Lock = "Escape"` → `caps_lock = "esc"`), so
+/// they match what the daemon and GUI write; entries that don't parse are kept as written.
+fn canonical_remaps(remaps: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    remaps
+        .into_iter()
+        .map(|(k, t)| {
+            let target = canonical_target(&t).unwrap_or(t);
+            (canonical_key(&k).unwrap_or(k), target)
+        })
+        .collect()
 }
 
 /// Write via a 0600 temp file and rename, so a crash never leaves half a file.
@@ -245,6 +257,20 @@ mod tests {
         let (loaded, warnings) = store.load_all();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(loaded, vec![p]);
+    }
+
+    #[test]
+    fn hand_written_key_names_load_canonical() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+        let text = "name = \"h\"\nbrightness = 50\neffect = \"Off\"\n\n[remaps]\nCaps_Lock = \"Escape\"\nmystery = \"a\"\n\n[macros.F1]\nsteps = [{ down = \"A\" }, { up = \"A\" }]\n";
+        std::fs::write(dir.path().join("profiles/h.toml"), text).unwrap();
+        let (loaded, warnings) = ProfileStore::new(dir.path()).load_all();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let p = &loaded[0];
+        assert_eq!(p.remaps.get("caps_lock").map(String::as_str), Some("esc"));
+        assert_eq!(p.remaps.get("mystery").map(String::as_str), Some("a"), "unparseable entries are kept as written");
+        assert!(p.macros.contains_key("f1"));
     }
 
     #[test]

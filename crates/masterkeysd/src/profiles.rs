@@ -3,9 +3,9 @@
 use masterkeys_core::LightingState;
 use masterkeys_core::process::{ProcessInfo, matches};
 pub use masterkeys_core::profile::{Profile, Settings};
-use masterkeys_core::bindings::{Macro, canonical_key, parse_target, validate_macro};
+use masterkeys_core::bindings::{Macro, canonical_key, canonical_target, check_macro_key, parse_target, validate_macro};
 use masterkeys_core::profile::validate_name;
-use steelseries_gg::input::{Action, BindingSet, InputKey};
+use steelseries_gg::input::{BindingSet, InputKey};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -191,11 +191,7 @@ impl Profiles {
         let action = parse_target(target).map_err(ProfileError::Invalid)?;
         let source_key = InputKey::parse(&source).map_err(|e| ProfileError::Invalid(e.to_string()))?;
         BindingSet::from_pairs([(source_key, action.clone())]).map_err(|e| ProfileError::Invalid(e.to_string()))?;
-        let keys = match action {
-            Action::Key(k) => vec![k],
-            Action::Combo(keys) => keys,
-        };
-        let target = keys.iter().map(|k| k.name().map_or_else(|| k.to_string(), str::to_string)).collect::<Vec<_>>().join("+");
+        let target = canonical_target(target).map_err(ProfileError::Invalid)?;
         let profile = self.active_mut();
         profile.macros.remove(&source);
         profile.remaps.insert(source, target);
@@ -214,6 +210,8 @@ impl Profiles {
     /// Put a macro on a key of the active profile; any remap of that key goes.
     pub fn set_macro(&mut self, key: &str, m: Macro) -> Result<(), ProfileError> {
         let source = canonical_key(key).map_err(ProfileError::Invalid)?;
+        let source_key = InputKey::parse(&source).map_err(|e| ProfileError::Invalid(e.to_string()))?;
+        check_macro_key(source_key).map_err(ProfileError::Invalid)?;
         validate_macro(&m).map_err(ProfileError::Invalid)?;
         let profile = self.active_mut();
         profile.remaps.remove(&source);
@@ -402,6 +400,16 @@ mod tests {
         p.set_macro("f1", tap).unwrap();
         p.clear_macro("f1").unwrap();
         assert!(p.active().remaps.is_empty() && p.active().macros.is_empty());
+    }
+
+    #[test]
+    fn chord_keys_cannot_hold_macros() {
+        use masterkeys_core::bindings::{Macro, MacroStep};
+        let tap = Macro { steps: vec![MacroStep::Down("a".into()), MacroStep::Up("a".into())] };
+        let mut p = three();
+        for key in ["left_ctrl", "right_ctrl", "left_shift", "right_shift"] {
+            assert!(matches!(p.set_macro(key, tap.clone()), Err(ProfileError::Invalid(_))), "{key}");
+        }
     }
 
     #[test]

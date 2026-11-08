@@ -31,7 +31,7 @@ impl Action {
 }
 
 /// Source key to action, validated on construction.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BindingSet {
     map: HashMap<InputKey, Action>,
 }

@@ -305,6 +305,20 @@ async fn bindings_follow_profile_switch() {
 }
 
 #[tokio::test]
+async fn unrelated_profile_edits_dont_touch_bindings() {
+    let mut s = serve().await;
+    s.proxy.set_remap("caps_lock", "esc").await.unwrap();
+    s.bindings.mark_unchanged();
+    s.proxy.create_profile("Other").await.unwrap();
+    s.proxy.set_default_profile("Other").await.unwrap();
+    s.proxy.set_profile_executables("Other", &["game"]).await.unwrap();
+    s.proxy.set_brightness(40).await.unwrap();
+    assert!(!s.bindings.has_changed().unwrap(), "same bindings must not re-notify (would undo an escape-chord stop)");
+    s.proxy.set_remap("caps_lock", "tab").await.unwrap();
+    assert!(s.bindings.has_changed().unwrap());
+}
+
+#[tokio::test]
 async fn recording_captures_keys() {
     let s = serve().await;
     s.proxy.start_macro_recording().await.unwrap();

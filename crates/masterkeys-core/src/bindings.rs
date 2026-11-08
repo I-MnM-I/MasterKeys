@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
-use steelseries_gg::input::{Action, BindingSet, InputKey, MAX_COMBO_LEN};
+use steelseries_gg::input::{Action, BindingSet, ESCAPE_CHORD, InputKey, MAX_COMBO_LEN};
 
 pub const MAX_MACRO_STEPS: usize = 500;
 pub const MAX_DELAY_MS: u32 = 10_000;
@@ -31,7 +31,7 @@ pub enum ResolvedStep {
 }
 
 /// The active profile's bindings, ready for the input engine.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Compiled {
     pub remaps: BindingSet,
     pub macros: HashMap<InputKey, Vec<ResolvedStep>>,
@@ -51,6 +51,24 @@ fn parse_key(name: &str) -> Result<InputKey, String> {
 pub fn canonical_key(name: &str) -> Result<String, String> {
     let key = parse_key(name)?;
     Ok(key.name().map_or_else(|| name.trim().to_string(), str::to_string))
+}
+
+/// A remap target in canonical spelling, e.g. `"Left_Ctrl + C"` gives `"left_ctrl+c"`.
+pub fn canonical_target(text: &str) -> Result<String, String> {
+    let keys = match parse_target(text)? {
+        Action::Key(k) => vec![k],
+        Action::Combo(keys) => keys,
+    };
+    Ok(keys.iter().map(|k| k.name().map_or_else(|| k.to_string(), str::to_string)).collect::<Vec<_>>().join("+"))
+}
+
+/// The keys of the escape chord can't hold macros: a macro swallows its key, and the chord must
+/// always be able to stop remapping.
+pub fn check_macro_key(key: InputKey) -> Result<(), String> {
+    if ESCAPE_CHORD.contains(&key) {
+        return Err(format!("{key} is part of the Ctrl+Ctrl+Shift+Shift escape chord and can't hold a macro"));
+    }
+    Ok(())
 }
 
 /// A remap target: one key (`"b"`) or keys pressed together (`"left_ctrl+c"`).
@@ -122,7 +140,8 @@ pub fn compile(remaps: &BTreeMap<String, String>, macros: &BTreeMap<String, Macr
     }
     let mut resolved = HashMap::new();
     for (source, m) in macros {
-        match parse_key(source).and_then(|s| resolve(m).map(|steps| (s, steps))) {
+        let entry = parse_key(source).and_then(|s| check_macro_key(s).map(|()| s));
+        match entry.and_then(|s| resolve(m).map(|steps| (s, steps))) {
             Ok((key, steps)) => {
                 resolved.insert(key, steps);
             }
@@ -186,6 +205,14 @@ mod tests {
             compiled.macros[&key("f1")],
             vec![ResolvedStep::Down(key("x")), ResolvedStep::Delay(std::time::Duration::from_millis(30)), ResolvedStep::Up(key("x"))]
         );
+    }
+
+    #[test]
+    fn macros_on_chord_keys_are_skipped() {
+        let macros = BTreeMap::from([("left_shift".to_string(), tap("x"))]);
+        let (compiled, warnings) = compile(&BTreeMap::new(), &macros);
+        assert!(compiled.macros.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
     #[test]
