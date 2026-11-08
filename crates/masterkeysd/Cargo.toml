@@ -17,4 +17,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "6.2.1", default-features = false, features = ["tokio", "service", "proxy"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["test-util", "net"] }
+tokio = { version = "1", features = ["test-util"] }
+zbus = { version = "6.2.1", default-features = false, features = ["tokio", "service", "proxy", "p2p"] }
+futures-util = "0.3"
