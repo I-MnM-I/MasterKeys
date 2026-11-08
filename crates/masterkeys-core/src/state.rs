@@ -38,7 +38,7 @@ impl LightingState {
 }
 
 /// The state plus whether the keyboard is connected, as `GetState` and `StateChanged` report it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StateReport {
     #[serde(flatten)]
     pub state: LightingState,
@@ -46,6 +46,30 @@ pub struct StateReport {
     /// Name of the active profile.
     #[serde(default)]
     pub profile: String,
+    /// The active profile's remaps and macros.
+    #[serde(default)]
+    pub remaps: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub macros: std::collections::BTreeMap<String, crate::bindings::Macro>,
+    #[serde(default)]
+    pub input: InputStatus,
+}
+
+/// What the daemon is doing with the keyboard's keys.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "message")]
+pub enum InputStatus {
+    /// Nothing needs the keys.
+    #[default]
+    Off,
+    /// Reading keys for the GUI or a macro recording, without remapping.
+    Reading,
+    /// The keyboard is grabbed and replayed through the virtual keyboard.
+    Remapping,
+    /// Remapping was stopped (escape chord) until the bindings change.
+    Stopped(String),
+    /// Remapping can't run, e.g. no permission for /dev/uinput.
+    Unavailable(String),
 }
 
 /// Parse `RRGGBB` or `#RRGGBB`.
@@ -85,10 +109,23 @@ mod tests {
 
     #[test]
     fn report_flattens_state() {
-        let r = StateReport { state: LightingState::default(), connected: true, profile: "Default".into() };
+        let r = StateReport { state: LightingState::default(), connected: true, profile: "Default".into(), ..Default::default() };
         let v: serde_json::Value = serde_json::to_value(&r).unwrap();
         assert_eq!(v["brightness"], 100);
         assert_eq!(v["connected"], true);
+    }
+
+    #[test]
+    fn old_reports_parse_without_bindings() {
+        let r: StateReport = serde_json::from_str(r#"{"effect":"Off","brightness":50,"connected":true}"#).unwrap();
+        assert!(r.remaps.is_empty() && r.macros.is_empty());
+        assert_eq!(r.input, InputStatus::Off);
+    }
+
+    #[test]
+    fn input_status_serializes_tagged() {
+        let v = serde_json::to_value(InputStatus::Unavailable("no uinput".into())).unwrap();
+        assert_eq!(v, serde_json::json!({"kind": "Unavailable", "message": "no uinput"}));
     }
 
     #[test]

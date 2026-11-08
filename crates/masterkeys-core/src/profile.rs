@@ -1,18 +1,24 @@
 //! Named lighting profiles and where they live on disk.
 
 use crate::LightingState;
+use crate::bindings::Macro;
+use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
 use steelseries_gg::rgb::{Color, Effect};
 
 /// A named lighting setup, optionally switched to when linked programs run.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Profile {
     pub name: String,
     pub lighting: LightingState,
     /// Program names that switch to this profile when they start (see `process::matches`).
     pub executables: Vec<String>,
+    /// Source key name to remap target, e.g. `caps_lock = "esc"` (see `bindings::parse_target`).
+    pub remaps: BTreeMap<String, String>,
+    /// Source key name to the macro it plays.
+    pub macros: BTreeMap<String, Macro>,
 }
 
 /// Which profile is the default and which was active, kept across restarts.
@@ -41,6 +47,10 @@ struct ProfileFile {
     #[serde(default)]
     executables: Vec<String>,
     effect: Effect,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    remaps: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    macros: BTreeMap<String, Macro>,
 }
 
 /// The format written by the earlier CLI draft: ten zone colours.
@@ -129,6 +139,8 @@ impl ProfileStore {
             brightness: profile.lighting.brightness,
             executables: profile.executables.clone(),
             effect: profile.lighting.effect.clone(),
+            remaps: profile.remaps.clone(),
+            macros: profile.macros.clone(),
         };
         let text = toml::to_string(&file).map_err(io::Error::other)?;
         write_private(&self.path(&profile.name), &text)
@@ -169,13 +181,15 @@ fn load_file(path: &Path) -> io::Result<Profile> {
             name: f.name,
             lighting: LightingState { effect: f.effect, brightness: f.brightness },
             executables: f.executables,
+            remaps: f.remaps,
+            macros: f.macros,
         });
     }
     match toml::from_str::<LegacyFile>(&text) {
         Ok(f) => Ok(Profile {
             name: f.name,
             lighting: LightingState { effect: Effect::Custom { colors: f.zones }, brightness: f.brightness },
-            executables: Vec::new(),
+            ..Profile::default()
         }),
         // Report the error for the current format, which is what a hand edit is aiming at.
         Err(_) => Err(io::Error::new(
@@ -211,7 +225,37 @@ mod tests {
             name: name.into(),
             lighting: LightingState { effect: Effect::Custom { colors: vec![Color::RED; 10] }, brightness: 60 },
             executables: vec!["eldenring.exe".into(), "factorio".into()],
+            ..Profile::default()
         }
+    }
+
+    #[test]
+    fn bindings_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProfileStore::new(dir.path());
+        let mut p = custom("binds");
+        p.remaps.insert("caps_lock".into(), "esc".into());
+        p.macros.insert(
+            "f1".into(),
+            crate::bindings::Macro {
+                steps: vec![crate::bindings::MacroStep::Down("a".into()), crate::bindings::MacroStep::Up("a".into())],
+            },
+        );
+        store.save(&p).unwrap();
+        let (loaded, warnings) = store.load_all();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(loaded, vec![p]);
+    }
+
+    #[test]
+    fn no_bindings_writes_no_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProfileStore::new(dir.path());
+        let p = custom("plain");
+        store.save(&p).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("profiles/plain.toml")).unwrap();
+        assert!(!text.contains("remaps") && !text.contains("macros"), "{text}");
+        assert_eq!(store.load_all().0, vec![p]);
     }
 
     #[test]
@@ -242,7 +286,7 @@ mod tests {
             vec![Profile {
                 name: "gaming".into(),
                 lighting: LightingState { effect: Effect::Custom { colors: want }, brightness: 80 },
-                executables: vec![],
+                ..Profile::default()
             }]
         );
     }

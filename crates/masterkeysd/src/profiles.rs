@@ -51,7 +51,7 @@ impl Profiles {
         let mut pending = Vec::new();
         let mut profiles: BTreeMap<String, Profile> = loaded.into_iter().map(|p| (p.name.clone(), p)).collect();
         if profiles.is_empty() {
-            let first = Profile { name: FIRST_RUN_NAME.into(), lighting: LightingState::default(), executables: vec![] };
+            let first = Profile { name: FIRST_RUN_NAME.into(), ..Profile::default() };
             profiles.insert(first.name.clone(), first);
             pending.push(StoreOp::Save(FIRST_RUN_NAME.into()));
         }
@@ -129,7 +129,7 @@ impl Profiles {
     /// A new profile with the current lighting and no links; does not activate it.
     pub fn create(&mut self, name: &str) -> Result<(), ProfileError> {
         self.new_name(name)?;
-        let profile = Profile { name: name.into(), lighting: self.active().lighting.clone(), executables: vec![] };
+        let profile = Profile { name: name.into(), lighting: self.active().lighting.clone(), ..Profile::default() };
         self.profiles.insert(name.into(), profile);
         self.pending.push(StoreOp::Save(name.into()));
         Ok(())
@@ -235,7 +235,7 @@ mod tests {
     use steelseries_gg::rgb::{Color, Effect};
 
     fn profile(name: &str, links: &[&str]) -> Profile {
-        Profile { name: name.into(), lighting: LightingState::default(), executables: links.iter().map(|s| s.to_string()).collect() }
+        Profile { name: name.into(), executables: links.iter().map(|s| s.to_string()).collect(), ..Profile::default() }
     }
 
     fn three() -> Profiles {

@@ -55,6 +55,7 @@ impl DaemonCore {
             state: self.state.borrow().clone(),
             connected: *self.connected.borrow(),
             profile: self.profiles.lock().unwrap().active().name.clone(),
+            ..StateReport::default()
         };
         serde_json::to_string(&report).expect("state serializes")
     }
