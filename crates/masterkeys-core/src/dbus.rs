@@ -33,6 +33,15 @@ pub trait Daemon {
     async fn set_default_profile(&self, name: &str) -> zbus::Result<()>;
 
     /// Start receiving `KeyEvent` (sent only to subscribers, only while subscribed).
+    /// Remap a key on the active profile, e.g. `("caps_lock", "esc")` or `("f13", "left_ctrl+c")`.
+    async fn set_remap(&self, key: &str, target: &str) -> zbus::Result<()>;
+    async fn clear_remap(&self, key: &str) -> zbus::Result<()>;
+    /// JSON `Macro` on a key of the active profile.
+    async fn set_macro(&self, key: &str, macro_json: &str) -> zbus::Result<()>;
+    async fn clear_macro(&self, key: &str) -> zbus::Result<()>;
+    async fn start_macro_recording(&self) -> zbus::Result<()>;
+    /// JSON `Macro` of the keys pressed since `StartMacroRecording`.
+    async fn stop_macro_recording(&self) -> zbus::Result<String>;
     async fn subscribe_keys(&self) -> zbus::Result<()>;
     async fn unsubscribe_keys(&self) -> zbus::Result<()>;
 

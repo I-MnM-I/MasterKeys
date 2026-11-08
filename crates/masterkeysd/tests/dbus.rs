@@ -23,6 +23,7 @@ struct Served {
     frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
     keys: mpsc::Sender<(u16, bool)>,
     want_reader: watch::Receiver<bool>,
+    bindings: watch::Receiver<masterkeys_core::bindings::Compiled>,
     _server: zbus::Connection,
     _config: Option<tempfile::TempDir>,
 }
@@ -53,7 +54,11 @@ async fn serve_in(config: &Path) -> Served {
         keys: hub.clone(),
         profiles,
         dirty: Arc::new(dirty_tx),
+        bindings: Arc::new(watch::channel(Default::default()).0),
+        input: Arc::new(watch::channel(Default::default()).0),
     };
+    core.refresh_bindings();
+    let bindings = core.bindings.subscribe();
     let service = DaemonService::new(core);
     let (a, b) = UnixStream::pair().unwrap();
     let server = Builder::unix_stream(a).server(Guid::generate()).p2p().serve_at(OBJECT_PATH, service);
@@ -62,7 +67,7 @@ async fn serve_in(config: &Path) -> Served {
     let (server, client) = (server.unwrap(), client.unwrap());
     tokio::spawn(emit_keys(server.clone(), hub, keys_rx));
     let proxy = DaemonProxy::new(&client).await.unwrap();
-    Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, _server: server, _config: None }
+    Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, bindings, _server: server, _config: None }
 }
 
 async fn report(s: &Served) -> StateReport {
@@ -259,4 +264,81 @@ async fn activate_switches_lighting() {
     let signal = tokio::time::timeout(Duration::from_secs(2), states.next()).await.unwrap().unwrap();
     let r: StateReport = serde_json::from_str(&signal.args().unwrap().state_json).unwrap();
     assert_eq!(r.profile, "Default");
+}
+
+#[tokio::test]
+async fn remap_round_trip() {
+    let s = serve().await;
+    s.proxy.set_remap("caps_lock", "esc").await.unwrap();
+    assert_eq!(report(&s).await.remaps.get("caps_lock").map(String::as_str), Some("esc"));
+    assert_eq!(s.bindings.borrow().remaps.len(), 1);
+    assert!(*s.want_reader.borrow(), "bindings turn the key reader on");
+    s.proxy.clear_remap("caps_lock").await.unwrap();
+    assert!(report(&s).await.remaps.is_empty());
+    assert!(s.bindings.borrow().is_empty());
+    assert!(!*s.want_reader.borrow());
+}
+
+#[tokio::test]
+async fn macro_round_trip() {
+    let s = serve().await;
+    let json = r#"{"steps":[{"down":"a"},{"delay":20},{"up":"a"}]}"#;
+    s.proxy.set_macro("f1", json).await.unwrap();
+    assert_eq!(report(&s).await.macros["f1"].steps.len(), 3);
+    assert_eq!(s.bindings.borrow().macros.len(), 1);
+    let err = s.proxy.set_macro("f1", "{not json").await.unwrap_err();
+    assert!(err.to_string().contains("InvalidArgument"), "{err}");
+    s.proxy.clear_macro("f1").await.unwrap();
+    assert!(report(&s).await.macros.is_empty());
+}
+
+#[tokio::test]
+async fn bindings_follow_profile_switch() {
+    let s = serve().await;
+    s.proxy.set_remap("caps_lock", "esc").await.unwrap();
+    s.proxy.create_profile("B").await.unwrap();
+    assert!(report(&s).await.remaps.is_empty() || report(&s).await.profile == "Default");
+    s.proxy.activate_profile("B").await.unwrap();
+    assert!(s.bindings.borrow().is_empty(), "new profiles start with no bindings");
+    s.proxy.activate_profile("Default").await.unwrap();
+    assert_eq!(s.bindings.borrow().remaps.len(), 1);
+}
+
+#[tokio::test]
+async fn recording_captures_keys() {
+    let s = serve().await;
+    s.proxy.start_macro_recording().await.unwrap();
+    assert!(*s.want_reader.borrow(), "recording turns the key reader on");
+    s.keys.send((30, true)).await.unwrap();
+    s.keys.send((30, false)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let m: masterkeys_core::bindings::Macro =
+        serde_json::from_str(&s.proxy.stop_macro_recording().await.unwrap()).unwrap();
+    use masterkeys_core::bindings::MacroStep;
+    assert_eq!(m.steps.first(), Some(&MacroStep::Down("a".into())));
+    assert_eq!(m.steps.last(), Some(&MacroStep::Up("a".into())));
+    assert!(!*s.want_reader.borrow());
+}
+
+#[tokio::test]
+async fn stop_without_start_is_invalid() {
+    let s = serve().await;
+    let err = s.proxy.stop_macro_recording().await.unwrap_err();
+    assert!(err.to_string().contains("InvalidArgument"), "{err}");
+    s.proxy.start_macro_recording().await.unwrap();
+    let err = s.proxy.stop_macro_recording().await.unwrap_err();
+    assert!(err.to_string().contains("InvalidArgument"), "nothing recorded: {err}");
+}
+
+#[tokio::test]
+async fn bindings_survive_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let s = serve_in(dir.path()).await;
+        s.proxy.set_remap("caps_lock", "esc").await.unwrap();
+        settle_saver().await;
+    }
+    let s = serve_in(dir.path()).await;
+    assert_eq!(report(&s).await.remaps.get("caps_lock").map(String::as_str), Some("esc"));
+    assert_eq!(s.bindings.borrow().remaps.len(), 1);
 }

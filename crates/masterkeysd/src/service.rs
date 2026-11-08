@@ -3,9 +3,11 @@
 use crate::keys::{KeyHub, P2P_PEER};
 use crate::profiles::{ProfileError, Profiles};
 use masterkeys_core::dbus::OBJECT_PATH;
+use masterkeys_core::bindings::{Compiled, Macro, compile};
 use masterkeys_core::profile::ProfileSummary;
 use masterkeys_core::render::Renderer;
-use masterkeys_core::{LightingState, StateReport, parse_hex};
+use masterkeys_core::{InputStatus, LightingState, StateReport, parse_hex};
+use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::{Color, Effect};
@@ -47,17 +49,45 @@ pub struct DaemonCore {
     pub profiles: Arc<Mutex<Profiles>>,
     /// Bumped on every change the saver should write.
     pub dirty: Arc<watch::Sender<u64>>,
+    /// The active profile's bindings, compiled for the input task.
+    pub bindings: Arc<watch::Sender<Compiled>>,
+    /// What the input task is doing, for `GetState`.
+    pub input: Arc<watch::Sender<InputStatus>>,
 }
+
+/// How long a macro recording takes keys before it stops by itself.
+const RECORDING_LIMIT: Duration = Duration::from_secs(60);
 
 impl DaemonCore {
     pub fn report_json(&self) -> String {
+        let (profile, remaps, macros) = {
+            let profiles = self.profiles.lock().unwrap();
+            let active = profiles.active();
+            (active.name.clone(), active.remaps.clone(), active.macros.clone())
+        };
         let report = StateReport {
             state: self.state.borrow().clone(),
             connected: *self.connected.borrow(),
-            profile: self.profiles.lock().unwrap().active().name.clone(),
-            ..StateReport::default()
+            profile,
+            remaps,
+            macros,
+            input: self.input.borrow().clone(),
         };
         serde_json::to_string(&report).expect("state serializes")
+    }
+
+    /// Recompile the active profile's bindings for the input task.
+    pub fn refresh_bindings(&self) {
+        let (compiled, warnings) = {
+            let profiles = self.profiles.lock().unwrap();
+            let active = profiles.active();
+            compile(&active.remaps, &active.macros)
+        };
+        for warning in warnings {
+            warn!("profile bindings: {warning}");
+        }
+        self.keys.set_bindings_active(!compiled.is_empty());
+        self.bindings.send_replace(compiled);
     }
 
     fn mark_dirty(&self) {
@@ -72,6 +102,7 @@ impl DaemonCore {
             profiles.active().lighting.clone()
         };
         self.state.send_replace(lighting);
+        self.refresh_bindings();
         self.mark_dirty();
         Ok(())
     }
@@ -132,8 +163,22 @@ impl DaemonService {
             *s = lighting;
             changed
         });
+        self.core.refresh_bindings();
         self.core.mark_dirty();
         self.core.announce_with(emitter, true).await;
+        Ok(())
+    }
+
+    /// Change the active profile's bindings, then save and tell listeners.
+    async fn change_bindings(
+        &self,
+        emitter: &SignalEmitter<'_>,
+        change: impl FnOnce(&mut Profiles) -> Result<(), ProfileError>,
+    ) -> Result<(), ServiceError> {
+        change(&mut self.core.profiles.lock().unwrap())?;
+        self.core.refresh_bindings();
+        self.core.mark_dirty();
+        self.core.announce_with(emitter, false).await;
         Ok(())
     }
 
@@ -276,6 +321,54 @@ impl DaemonService {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<(), ServiceError> {
         self.change_profiles(&emitter, |p| p.set_default(name)).await
+    }
+
+    async fn set_remap(
+        &self,
+        key: &str,
+        target: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), ServiceError> {
+        self.change_bindings(&emitter, |p| p.set_remap(key, target)).await
+    }
+
+    async fn clear_remap(&self, key: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), ServiceError> {
+        self.change_bindings(&emitter, |p| p.clear_remap(key)).await
+    }
+
+    /// JSON `Macro`, e.g. `{"steps":[{"down":"a"},{"delay":20},{"up":"a"}]}`.
+    async fn set_macro(
+        &self,
+        key: &str,
+        macro_json: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), ServiceError> {
+        let m: Macro = serde_json::from_str(macro_json).map_err(|e| invalid(format!("not a valid macro: {e}")))?;
+        self.change_bindings(&emitter, |p| p.set_macro(key, m)).await
+    }
+
+    async fn clear_macro(&self, key: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), ServiceError> {
+        self.change_bindings(&emitter, |p| p.clear_macro(key)).await
+    }
+
+    /// Record physical key presses (replacing any recording in progress) until `StopMacroRecording`,
+    /// or for at most a minute.
+    fn start_macro_recording(&self) {
+        let started = self.core.keys.start_recording();
+        let keys = self.core.keys.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RECORDING_LIMIT).await;
+            keys.freeze_recording(started);
+        });
+    }
+
+    /// JSON `Macro` of what was recorded.
+    fn stop_macro_recording(&self) -> Result<String, ServiceError> {
+        let m = self.core.keys.stop_recording().ok_or_else(|| invalid("not recording a macro".into()))?;
+        if m.steps.is_empty() {
+            return Err(invalid("no keys were recorded".into()));
+        }
+        Ok(serde_json::to_string(&m).expect("macro serializes"))
     }
 
     /// Start sending this caller `KeyEvent` signals.

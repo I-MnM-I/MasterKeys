@@ -41,7 +41,10 @@ async fn start() -> Harness {
         keys: hub.clone(),
         profiles: Arc::new(Mutex::new(profiles)),
         dirty: Arc::new(dirty_tx),
+        bindings: Arc::new(watch::channel(Default::default()).0),
+        input: Arc::new(watch::channel(Default::default()).0),
     };
+    core.refresh_bindings();
     let service = DaemonService::new(core);
     let (a, b) = UnixStream::pair().unwrap();
     let server = Builder::unix_stream(a).server(Guid::generate()).p2p().serve_at(OBJECT_PATH, service);

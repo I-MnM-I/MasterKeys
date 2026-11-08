@@ -1,6 +1,9 @@
 //! Key press events for the GUI's live keyboard: read-only evdev, only while someone is subscribed.
 
+use crate::engine::Recorder;
 use crate::service::DaemonService;
+use masterkeys_core::bindings::Macro;
+use std::time::Instant;
 use futures_util::StreamExt;
 use masterkeys_core::dbus::OBJECT_PATH;
 use std::collections::{BTreeSet, HashSet};
@@ -124,10 +127,25 @@ pub async fn read_keys(events: mpsc::Sender<(u16, bool)>, mut stop: watch::Recei
 /// Name used for the single peer of a peer-to-peer connection, which has no bus names.
 pub const P2P_PEER: &str = "p2p";
 
-/// Who is subscribed, plus the switch that runs the key reader while anyone is.
+/// What needs the keys: subscribers, a macro recording, or bindings to apply.
+#[derive(Default)]
+struct HubState {
+    subscribers: Subscribers,
+    /// The recording, and whether it stopped taking keys (time limit reached).
+    recording: Option<(Recorder, bool)>,
+    bindings: bool,
+}
+
+impl HubState {
+    fn wants_reader(&self) -> bool {
+        !self.subscribers.is_empty() || self.recording.as_ref().is_some_and(|(_, frozen)| !frozen) || self.bindings
+    }
+}
+
+/// Who needs key events, plus the switch that runs the key reader while anything does.
 #[derive(Clone)]
 pub struct KeyHub {
-    subscribers: Arc<Mutex<Subscribers>>,
+    state: Arc<Mutex<HubState>>,
     want_reader: Arc<watch::Sender<bool>>,
 }
 
@@ -135,36 +153,81 @@ impl KeyHub {
     /// The hub and the receiver `run_reader` watches.
     pub fn new() -> (Self, watch::Receiver<bool>) {
         let (want_tx, want_rx) = watch::channel(false);
-        let hub = Self { subscribers: Arc::default(), want_reader: Arc::new(want_tx) };
+        let hub = Self { state: Arc::default(), want_reader: Arc::new(want_tx) };
         (hub, want_rx)
+    }
+
+    fn update(&self, change: impl FnOnce(&mut HubState)) {
+        let mut state = self.state.lock().unwrap();
+        change(&mut state);
+        let want = state.wants_reader();
+        self.want_reader.send_if_modified(|w| std::mem::replace(w, want) != want);
     }
 
     pub fn subscribe(&self, name: String) {
         info!("key subscriber added: {name}");
-        if self.subscribers.lock().unwrap().add(name) {
-            self.want_reader.send_replace(true);
-        }
+        self.update(|s| {
+            s.subscribers.add(name);
+        });
     }
 
     pub fn unsubscribe(&self, name: &str) {
-        let mut subscribers = self.subscribers.lock().unwrap();
-        let known = subscribers.names().any(|n| n == name);
-        if subscribers.remove(name) {
-            self.want_reader.send_replace(false);
-        }
+        let mut known = false;
+        self.update(|s| {
+            known = s.subscribers.names().any(|n| n == name);
+            s.subscribers.remove(name);
+        });
         if known {
             info!("key subscriber removed: {name}");
         }
     }
 
     pub fn subscribers(&self) -> Vec<String> {
-        self.subscribers.lock().unwrap().names().cloned().collect()
+        self.state.lock().unwrap().subscribers.names().cloned().collect()
+    }
+
+    /// Whether the active profile has bindings (they need the reader running).
+    pub fn set_bindings_active(&self, active: bool) {
+        self.update(|s| s.bindings = active);
+    }
+
+    /// Start recording a macro, replacing any recording in progress; returns its start time.
+    pub fn start_recording(&self) -> Instant {
+        let now = Instant::now();
+        self.update(|s| s.recording = Some((Recorder::start(now), false)));
+        now
+    }
+
+    /// Stop taking keys into the recording started at `started`, if it is still the current one.
+    pub fn freeze_recording(&self, started: Instant) {
+        self.update(|s| {
+            if let Some((recorder, frozen)) = &mut s.recording
+                && recorder.started() == started
+            {
+                *frozen = true;
+            }
+        });
+    }
+
+    /// End the recording and return what it captured, or `None` if nothing was recording.
+    pub fn stop_recording(&self) -> Option<Macro> {
+        let mut taken = None;
+        self.update(|s| taken = s.recording.take());
+        taken.map(|(recorder, _)| recorder.finish())
+    }
+
+    /// A physical key transition, for the recording.
+    pub fn record(&self, code: u16, pressed: bool, at: Instant) {
+        if let Some((recorder, false)) = &mut self.state.lock().unwrap().recording {
+            recorder.feed(code, pressed, at);
+        }
     }
 }
 
 /// Send each key transition as `KeyEvent` to every subscriber, addressed to it alone.
 pub async fn emit_keys(conn: zbus::Connection, hub: KeyHub, mut events: mpsc::Receiver<(u16, bool)>) {
     while let Some((code, pressed)) = events.recv().await {
+        hub.record(code, pressed, Instant::now());
         for name in hub.subscribers() {
             let emitter = match SignalEmitter::new(&conn, OBJECT_PATH) {
                 Ok(emitter) => emitter,

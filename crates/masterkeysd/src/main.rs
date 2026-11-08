@@ -52,7 +52,10 @@ async fn main() -> ExitCode {
         keys: keys.clone(),
         profiles: profiles.clone(),
         dirty: Arc::new(dirty_tx),
+        bindings: Arc::new(watch::channel(Default::default()).0),
+        input: Arc::new(watch::channel(Default::default()).0),
     };
+    core.refresh_bindings();
     let service = DaemonService::new(core.clone());
     let conn = match zbus::connection::Builder::session().serve_at(OBJECT_PATH, service).build().await {
         Ok(conn) => conn,
