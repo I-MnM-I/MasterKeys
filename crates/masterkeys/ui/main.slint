@@ -1,0 +1,280 @@
+import { Button, Slider, ComboBox, LineEdit, HorizontalBox, VerticalBox, GroupBox } from "std-widgets.slint";
+import { Keyboard, KeyView } from "keyboard.slint";
+
+export { KeyView }
+
+component Swatch inherits Rectangle {
+    in property <color> fill;
+    in property <bool> active;
+    callback clicked;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    background: root.fill;
+    border-width: root.active ? 3px : 1px;
+    border-color: root.active ? #ffd54a : #ffffff40;
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component ColorSlot inherits HorizontalLayout {
+    in property <string> name;
+    in property <color> fill;
+    in property <bool> active;
+    in property <bool> valid;
+    in property <bool> enabled;
+    in-out property <string> hex;
+    callback selected;
+    callback edited(string);
+    spacing: 6px;
+    alignment: start;
+    Text {
+        text: root.name;
+        vertical-alignment: center;
+        width: 16px;
+    }
+    Swatch {
+        fill: root.fill;
+        active: root.active;
+        clicked => {
+            root.selected();
+        }
+    }
+    LineEdit {
+        width: 110px;
+        enabled: root.enabled;
+        text <=> root.hex;
+        placeholder-text: "RRGGBB";
+        edited(text) => {
+            root.edited(text);
+        }
+    }
+    Text {
+        text: root.valid ? "" : "not a colour";
+        color: #ff6b6b;
+        vertical-alignment: center;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "MasterKeys";
+    preferred-width: 1000px;
+    min-width: 760px;
+    background: #1c1c1f;
+
+    in property <[KeyView]> keys;
+    in property <float> board-width: 22.5;
+    in property <float> board-height: 6.5;
+    in property <string> status-text: "Daemon not running";
+    in property <bool> connected: false;
+    in property <bool> daemon-running: false;
+    in property <string> error-text: "";
+
+    in property <color> slot-a-color: #ffffff;
+    in property <color> slot-b-color: #0000ff;
+    in-out property <string> slot-a-hex: "ffffff";
+    in-out property <string> slot-b-hex: "0000ff";
+    in property <bool> slot-a-valid: true;
+    in property <bool> slot-b-valid: true;
+    in property <int> active-slot: 0;
+    in property <[color]> presets;
+
+    in property <int> selected-zone: -1;
+    in-out property <float> brightness: 100;
+    in property <[string]> effect-labels;
+    in-out property <int> effect-index: 0;
+    in-out property <float> speed: 0.5;
+    in property <bool> show-speed: false;
+
+    callback key-clicked(int);
+    callback slot-selected(int);
+    callback hex-edited(int, string);
+    callback preset-clicked(int);
+    callback apply-all();
+    callback apply-zone();
+    callback brightness-released(float);
+    callback effect-selected(int);
+    callback speed-released(float);
+    callback start-daemon();
+
+    VerticalBox {
+        padding: 12px;
+        spacing: 12px;
+
+        board := Rectangle {
+            min-height: 160px;
+            vertical-stretch: 1;
+            Keyboard {
+                unit: min(board.width / root.board-width, board.height / root.board-height);
+                board-width: root.board-width;
+                board-height: root.board-height;
+                keys: root.keys;
+                key-clicked(i) => {
+                    root.key-clicked(i);
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 16px;
+            vertical-stretch: 0;
+
+            GroupBox {
+                title: "Colour";
+                VerticalBox {
+                    ColorSlot {
+                        name: "A";
+                        fill: root.slot-a-color;
+                        active: root.active-slot == 0;
+                        valid: root.slot-a-valid;
+                        enabled: root.connected;
+                        hex <=> root.slot-a-hex;
+                        selected => {
+                            root.slot-selected(0);
+                        }
+                        edited(t) => {
+                            root.hex-edited(0, t);
+                        }
+                    }
+                    ColorSlot {
+                        name: "B";
+                        fill: root.slot-b-color;
+                        active: root.active-slot == 1;
+                        valid: root.slot-b-valid;
+                        enabled: root.connected;
+                        hex <=> root.slot-b-hex;
+                        selected => {
+                            root.slot-selected(1);
+                        }
+                        edited(t) => {
+                            root.hex-edited(1, t);
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        alignment: start;
+                        for c[i] in root.presets: Swatch {
+                            fill: c;
+                            active: false;
+                            clicked => {
+                                root.preset-clicked(i);
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Button {
+                            text: "Apply to all keys";
+                            enabled: root.connected && root.slot-a-valid;
+                            clicked => {
+                                root.apply-all();
+                            }
+                        }
+                        if root.selected-zone >= 0: Button {
+                            text: "Apply to zone " + root.selected-zone;
+                            enabled: root.connected && root.slot-a-valid;
+                            clicked => {
+                                root.apply-zone();
+                            }
+                        }
+                    }
+                }
+            }
+
+            GroupBox {
+                title: "Lighting";
+                VerticalBox {
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Brightness";
+                            vertical-alignment: center;
+                            width: 80px;
+                        }
+                        Slider {
+                            minimum: 0;
+                            maximum: 100;
+                            step: 1;
+                            enabled: root.connected;
+                            value <=> root.brightness;
+                            released(v) => {
+                                root.brightness-released(v);
+                            }
+                        }
+                        Text {
+                            text: round(root.brightness) + "%";
+                            vertical-alignment: center;
+                            width: 40px;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Effect";
+                            vertical-alignment: center;
+                            width: 80px;
+                        }
+                        ComboBox {
+                            model: root.effect-labels;
+                            enabled: root.connected;
+                            current-index <=> root.effect-index;
+                            selected => {
+                                root.effect-selected(self.current-index);
+                            }
+                        }
+                    }
+                    if root.show-speed: HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Speed";
+                            vertical-alignment: center;
+                            width: 80px;
+                        }
+                        Slider {
+                            minimum: 0.1;
+                            maximum: 3.0;
+                            enabled: root.connected;
+                            value <=> root.speed;
+                            released(v) => {
+                                root.speed-released(v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            vertical-stretch: 0;
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 5px;
+                background: root.connected ? #4caf50 : (root.daemon-running ? #ffb300 : #e53935);
+            }
+            Text {
+                text: root.status-text;
+                vertical-alignment: center;
+            }
+            if !root.daemon-running: Button {
+                text: "Start daemon";
+                clicked => {
+                    root.start-daemon();
+                }
+            }
+            Text {
+                text: root.error-text;
+                color: #ff6b6b;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+        }
+    }
+}

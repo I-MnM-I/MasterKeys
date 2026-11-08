@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MasterKeys
+Comment=Lighting and keys for the SteelSeries Apex 3
+Exec=masterkeys
+Icon=input-keyboard
+Terminal=false
+Categories=Settings;HardwareSettings;

@@ -1,0 +1,49 @@
+// The Apex 3 drawing. Positions are in key units; `unit` is pixels per key unit.
+
+export struct KeyView {
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    label: string,
+    color: color,
+    text-color: color,
+    pressed: bool,
+    selected: bool,
+}
+
+export component Keyboard inherits Rectangle {
+    in property <[KeyView]> keys;
+    in property <length> unit: 40px;
+    in property <float> board-width: 22.5;
+    in property <float> board-height: 6.5;
+    callback key-clicked(int);
+
+    width: root.board-width * root.unit;
+    height: root.board-height * root.unit;
+
+    for key[i] in root.keys: Rectangle {
+        x: key.x * root.unit + 2px;
+        y: key.y * root.unit + 2px;
+        width: key.w * root.unit - 4px;
+        height: key.h * root.unit - 4px;
+        border-radius: 5px;
+        background: key.color;
+        border-width: key.pressed ? 3px : (key.selected ? 2px : 1px);
+        border-color: key.pressed ? #ffffff : (key.selected ? #ffd54a : #00000060);
+
+        Text {
+            text: key.label;
+            color: key.text-color;
+            font-size: min(root.unit * 0.3, 13px);
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        TouchArea {
+            clicked => {
+                root.key-clicked(i);
+            }
+        }
+    }
+}

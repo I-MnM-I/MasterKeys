@@ -135,7 +135,7 @@ async fn session(
     };
 
     let mut status = None;
-    let mut report = |r: StateReport, status: &mut Option<Status>| {
+    let report = |r: StateReport, status: &mut Option<Status>| {
         let now = if r.connected { Status::Connected } else { Status::KeyboardNotFound };
         if *status != Some(now) {
             *status = Some(now);
