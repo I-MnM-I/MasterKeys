@@ -1,5 +1,6 @@
 //! The org.masterkeys.Daemon1 D-Bus interface.
 
+use crate::render::Renderer;
 use masterkeys_core::{LightingState, StateReport, parse_hex};
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;
@@ -54,6 +55,18 @@ impl DaemonService {
         Ok(())
     }
 
+    /// What the current state shows: rendered directly when it doesn't animate (the output loop may not
+    /// have sent it yet), otherwise the frame last sent.
+    fn shown_colors(&self) -> Vec<Color> {
+        let mut renderer = Renderer::new();
+        renderer.set_state(&self.state.borrow());
+        if renderer.next_frame_in().is_none() {
+            renderer.frame().to_vec()
+        } else {
+            self.frame.lock().unwrap().to_vec()
+        }
+    }
+
     fn with_effect(&self, effect: Effect) -> LightingState {
         LightingState { effect, ..self.state.borrow().clone() }
     }
@@ -91,10 +104,7 @@ impl DaemonService {
             return Err(invalid(format!("zone must be 0-{}, got {zone}", ZONE_COUNT - 1)));
         }
         let color = parse_hex(color).map_err(invalid)?;
-        let mut colors = match &self.state.borrow().effect {
-            Effect::Custom { colors } => colors.clone(),
-            _ => self.frame.lock().unwrap().to_vec(),
-        };
+        let mut colors = self.shown_colors();
         colors[zone] = color;
         self.apply(self.with_effect(Effect::Custom { colors }), &emitter).await
     }

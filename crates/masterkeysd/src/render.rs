@@ -14,6 +14,12 @@ pub struct Renderer {
     current: [Color; ZONE_COUNT],
 }
 
+impl Default for Renderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Renderer {
     pub fn new() -> Self {
         let state = LightingState::default();

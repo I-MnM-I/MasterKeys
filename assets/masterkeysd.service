@@ -1,0 +1,12 @@
+[Unit]
+Description=MasterKeys keyboard daemon (SteelSeries Apex 3)
+
+[Service]
+Type=dbus
+BusName=org.masterkeys.Daemon
+ExecStart=%h/.local/bin/masterkeysd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

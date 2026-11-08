@@ -46,8 +46,9 @@ async fn set_all_color_updates_state() {
 }
 
 #[tokio::test]
-async fn set_zone_color_starts_from_shown_colours() {
+async fn set_zone_color_during_animation_freezes_the_shown_frame() {
     let s = serve().await;
+    s.proxy.set_effect(r#"{"Spectrum":{"speed":1.0}}"#).await.unwrap();
     *s.frame.lock().unwrap() = [Color::BLUE; ZONE_COUNT];
     s.proxy.set_zone_color(3, "00ff00").await.unwrap();
     let mut want = vec![Color::BLUE; ZONE_COUNT];
@@ -98,4 +99,16 @@ async fn get_state_reports_connection() {
     assert!(!report(&s).await.connected);
     s.connected.send_replace(true);
     assert!(report(&s).await.connected);
+}
+
+#[tokio::test]
+async fn set_zone_color_right_after_a_colour_change_uses_the_new_colour() {
+    // The output loop hasn't sent red yet, so the last frame is still black.
+    let s = serve().await;
+    *s.frame.lock().unwrap() = [Color::BLACK; ZONE_COUNT];
+    s.proxy.set_all_color("ff0000").await.unwrap();
+    s.proxy.set_zone_color(0, "00ff00").await.unwrap();
+    let mut want = vec![Color::RED; ZONE_COUNT];
+    want[0] = Color::GREEN;
+    assert_eq!(s.state.borrow().effect, Effect::Custom { colors: want });
 }
