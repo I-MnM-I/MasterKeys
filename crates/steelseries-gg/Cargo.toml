@@ -1,92 +1,38 @@
 [package]
 name = "steelseries-gg"
 version = "0.1.17"
-description = "A complete open-source SteelSeries GG replacement for Linux - RGB lighting, audio mixer, and GameSense support"
+description = "SteelSeries Apex 3 device library for MasterKeys (vendored fork of steelseriesgg-rs)"
 repository = "https://github.com/Ven0m0/steelseriesgg-rs"
-readme = "README.md"
+readme = "UPSTREAM.md"
 license = "MIT"
-edition = "2024"
-rust-version = "1.99.1"
-keywords = ["steelseries", "rgb", "gaming", "linux", "audio"]
+edition.workspace = true
+rust-version.workspace = true
+publish = false
 categories = ["hardware-support", "games"]
 
 [lib]
 name = "steelseries_gg"
 path = "src/lib.rs"
 
-[[bin]]
-name = "ssgg"
-path = "src/main.rs"
-
-# Discovery and diagnostics binaries
-[[bin]]
-name = "discover_actuation"
-path = "src/bin/discover_actuation.rs"
-
-[[bin]]
-name = "sonar_control"
-path = "src/bin/sonar_control.rs"
-required-features = ["sonar"]
-
-[[bin]]
-name = "ssgg-gui"
-path = "src/bin/ssgg-gui.rs"
-required-features = ["desktop"]
-
 [features]
 default = []
-audio = ["dep:libpulse-binding"]
-sonar = ["dep:reqwest"]
-# Linux-only evdev key remapper (grab + uinput); independent of audio and sonar
+# Linux-only evdev key remapper (grab + uinput)
 remap = ["dep:evdev", "rustix/event"]
-# Native window around the profile editor (`ssgg-gui`): WebView2 on Windows, WebKitGTK (Wayland via GTK) on Linux
-desktop = [
-    "dep:wry",
-    "dep:tao",
-    "dep:minify-html",
-    "dep:lightningcss",
-    "dep:oxc_allocator",
-    "dep:oxc_codegen",
-    "dep:oxc_minifier",
-    "dep:oxc_parser",
-    "dep:oxc_span",
-]
 
 [dependencies]
-anyhow = "1.0.104"
-async-trait = "0.1.92"
 # HTTP server for GameSense API
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
-
-# Date/time for diagnostic timestamps
-chrono = { version = "0.4.45", features = ["serde"] }
-
-# CLI
-clap = { version = "4.6.7", features = ["derive"] }
-colored = "3.1.1"
 
 # Configuration
 directories = "6.0.0"
 # hidapi is configured per-platform — see [target.*] sections below
 
-# Terminal UI
-indicatif = "0.18.6"
 libc = "0.2.191" # For root permission checks (geteuid)
-libpulse-binding = { version = "2.30.1", optional = true }
 parking_lot = "0.13.0"
-
-# HTTP client for Sonar API (optional, only needed for sonar feature)
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "charset", "system-proxy"], optional = true }
 
 # Serialization
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-
-# System information for diagnostics
-sysinfo = "0.40.1"
-tabled = "0.22.0"
-# Native window and event loop for ssgg-gui (feature `desktop`); owns the GTK main loop on Linux
-tao = { version = "0.37.2", optional = true }
 
 # Error handling
 thiserror = "2.0.21"
@@ -97,43 +43,17 @@ tower-http = { version = "0.7.1", default-features = false, features = ["cors"] 
 
 # Logging
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-# Webview for ssgg-gui (feature `desktop`): WebView2 / WebKitGTK. Pulls the gtk-rs 0.18 stack on Linux
-# (RUSTSEC-2024-0370 proc-macro-error, RUSTSEC-2024-0429 glib: unfixable here, desktop builds only)
-wry = { version = "0.57.1", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 hidapi = { version = "=2.6.7", default-features = false, features = ["linux-native-basic-udev"] }
 # evdev grab + uinput for the optional `remap` feature
 evdev = { version = "0.13.2", optional = true }
 
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-hidapi = { version = "=2.6.7" }
-
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.6", features = ["process"] }
 
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-] }
-
 [dev-dependencies]
 tempfile = "3.27.0"
-
-# build.rs minifies the profile editor that `ssgg-gui` embeds. Versions follow minify-html's own oxc and
-# lightningcss requirements so the build pulls one copy of each.
-[build-dependencies]
-lightningcss = { version = "1.0.0-alpha.68", optional = true }
-minify-html = { version = "0.18.1", optional = true }
-oxc_allocator = { version = "0.95", optional = true }
-oxc_codegen = { version = "0.95", optional = true }
-oxc_minifier = { version = "0.95", optional = true }
-oxc_parser = { version = "0.95", optional = true }
-oxc_span = { version = "0.95", optional = true }
 
 [lints.clippy]
 collapsible_if = "allow"
