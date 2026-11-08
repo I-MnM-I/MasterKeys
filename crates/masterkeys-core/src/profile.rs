@@ -112,6 +112,17 @@ impl ProfileStore {
         (profiles, warnings)
     }
 
+    /// The name of every `*.toml` file in the profiles folder, readable or not.
+    pub fn saved_names(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
+        entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+            .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .collect()
+    }
+
     pub fn save(&self, profile: &Profile) -> io::Result<()> {
         let file = ProfileFile {
             name: profile.name.clone(),

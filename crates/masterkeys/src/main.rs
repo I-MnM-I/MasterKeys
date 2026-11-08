@@ -4,7 +4,7 @@ slint::include_modules!();
 
 use masterkeys::client::{self, Command, Event, Status};
 use masterkeys::effects::{EffectKind, build, kind_of, parse_color_input};
-use masterkeys::view::key_colors;
+use masterkeys::view::{key_colors, reselect};
 use masterkeys_core::layout::Layout;
 use masterkeys_core::process;
 use masterkeys_core::profile::ProfileSummary;
@@ -47,6 +47,8 @@ struct App {
     profiles: Vec<ProfileSummary>,
     active_profile: String,
     selected_profile: Option<String>,
+    /// A rename sent to the daemon and not yet seen in a profile list: (old, new).
+    pending_rename: Option<(String, String)>,
     commands: UnboundedSender<Command>,
 }
 
@@ -91,9 +93,8 @@ fn set_slot(ui: &MainWindow, app: &mut App, slot: usize, color: Color) {
 
 /// Redraw the profile list and the selected profile's linked programs.
 fn show_profiles(ui: &MainWindow, app: &mut App) {
-    if app.selected().is_none() {
-        app.selected_profile = Some(app.active_profile.clone()).filter(|n| app.profiles.iter().any(|p| &p.name == n));
-    }
+    app.selected_profile =
+        reselect(app.selected_profile.as_deref(), app.pending_rename.as_ref(), &app.profiles, &app.active_profile);
     let rows: Vec<SharedString> = app
         .profiles
         .iter()
@@ -133,6 +134,7 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
         Event::Profiles(list) => {
             app.profiles = list;
             show_profiles(ui, app);
+            app.pending_rename = None;
         }
         Event::State(state, profile) => {
             if profile != app.active_profile {
@@ -215,6 +217,7 @@ fn main() -> Result<(), slint::PlatformError> {
         profiles: Vec::new(),
         active_profile: String::new(),
         selected_profile: None,
+        pending_rename: None,
         commands,
     }));
     {
@@ -340,7 +343,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let mut app = a.borrow_mut();
         let Some(old) = app.selected().map(|p| p.name.clone()) else { return };
         let new = new.trim().to_string();
-        app.selected_profile = Some(new.clone());
+        app.pending_rename = Some((old.clone(), new.clone()));
         app.send(Command::RenameProfile(old, new));
     });
 

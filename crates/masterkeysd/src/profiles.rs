@@ -4,7 +4,7 @@ use masterkeys_core::LightingState;
 use masterkeys_core::process::{ProcessInfo, matches};
 pub use masterkeys_core::profile::{Profile, Settings};
 use masterkeys_core::profile::validate_name;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 const FIRST_RUN_NAME: &str = "Default";
@@ -40,6 +40,8 @@ pub struct Profiles {
     active: String,
     default: String,
     pending: Vec<StoreOp>,
+    /// Names of profile files on disk that couldn't be read; never written over.
+    reserved: BTreeSet<String>,
 }
 
 impl Profiles {
@@ -57,7 +59,7 @@ impl Profiles {
         let default = settings.default_profile.filter(|d| profiles.contains_key(d)).unwrap_or(first_name);
         let active = settings.active_profile.filter(|a| profiles.contains_key(a)).unwrap_or_else(|| default.clone());
         pending.push(StoreOp::Settings);
-        Self { profiles, active, default, pending }
+        Self { profiles, active, default, pending, reserved: BTreeSet::new() }
     }
 
     pub fn active(&self) -> &Profile {
@@ -86,6 +88,11 @@ impl Profiles {
         std::mem::take(&mut self.pending)
     }
 
+    /// Keep these names (unreadable files on disk) from being created or renamed onto.
+    pub fn reserve(&mut self, names: impl IntoIterator<Item = String>) {
+        self.reserved.extend(names.into_iter().filter(|n| !self.profiles.contains_key(n)));
+    }
+
     fn known(&self, name: &str) -> Result<(), ProfileError> {
         if self.profiles.contains_key(name) { Ok(()) } else { Err(ProfileError::Invalid(format!("no profile named {name:?}"))) }
     }
@@ -94,6 +101,11 @@ impl Profiles {
         validate_name(name).map_err(ProfileError::Invalid)?;
         if self.profiles.contains_key(name) {
             return Err(ProfileError::Invalid(format!("a profile named {name:?} already exists")));
+        }
+        if self.reserved.contains(name) {
+            return Err(ProfileError::Invalid(format!(
+                "profiles/{name}.toml exists but couldn't be read; fix or remove that file first"
+            )));
         }
         Ok(())
     }
@@ -189,12 +201,14 @@ impl Profiles {
 pub struct AutoSwitch {
     /// Linked processes seen last time: (pid, start, profile).
     seen: Vec<(u32, u64, String)>,
+    /// The profile last switched to, so more processes of the same game don't undo a manual pick.
+    target: Option<String>,
 }
 
 impl AutoSwitch {
-    /// The profile to switch to, if the set of running linked programs changed: the most recently
-    /// started one's, or the default when none is left. `None` when nothing changed, so a manual
-    /// choice holds.
+    /// The profile to switch to when the running linked programs change which profile they call
+    /// for: the most recently started one's, or the default when none is left. `None` otherwise, so
+    /// a manual choice holds.
     pub fn update(&mut self, profiles: &Profiles, running: &[ProcessInfo]) -> Option<String> {
         let mut now: Vec<(u32, u64, String)> = running
             .iter()
@@ -206,7 +220,12 @@ impl AutoSwitch {
         }
         self.seen = now;
         let newest = self.seen.iter().max_by_key(|(_, start, _)| *start);
-        Some(newest.map_or_else(|| profiles.default_name().to_owned(), |(_, _, name)| name.clone()))
+        let target = newest.map_or_else(|| profiles.default_name().to_owned(), |(_, _, name)| name.clone());
+        if self.target.as_ref() == Some(&target) {
+            return None;
+        }
+        self.target = Some(target.clone());
+        Some(target)
     }
 }
 
@@ -341,11 +360,24 @@ mod tests {
     }
 
     #[test]
-    fn same_pid_restarted_counts_as_new() {
-        let p = three();
+    fn more_processes_of_the_same_game_keep_a_manual_pick() {
+        let mut p = three();
         let mut a = AutoSwitch::default();
-        assert!(a.update(&p, &[proc(5, 10, "eldenring.exe")]).is_some());
-        assert!(a.update(&p, &[proc(5, 99, "eldenring.exe")]).is_some());
+        let launcher = proc(5, 10, "eldenring.exe");
+        let game = proc(6, 20, "eldenring.exe");
+        assert_eq!(a.update(&p, std::slice::from_ref(&launcher)).as_deref(), Some("Elden"));
+        p.activate("Factorio").unwrap();
+        assert_eq!(a.update(&p, &[launcher, game.clone()]), None);
+        assert_eq!(a.update(&p, &[game]), None);
+        assert_eq!(a.update(&p, &[]).as_deref(), Some("Default"));
+    }
+
+    #[test]
+    fn skipped_file_names_cannot_be_taken() {
+        let mut p = three();
+        p.reserve(["broken".to_string()]);
+        assert!(matches!(p.create("broken"), Err(ProfileError::Invalid(_))));
+        assert!(matches!(p.rename("Elden", "broken"), Err(ProfileError::Invalid(_))));
     }
 
     #[test]
