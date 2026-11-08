@@ -2,6 +2,7 @@
 
 pub mod dbus;
 pub mod layout;
+pub mod process;
 pub mod profile;
 
 pub mod render;
