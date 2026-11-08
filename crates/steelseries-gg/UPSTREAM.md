@@ -15,3 +15,4 @@ at commit `84a015293606db70f39dc1e857b264648db3e489`, on 2026-11-08.
 - Added `apex3` sync API (report builders + `Apex3Device`), protocol inlined from the hardware probe.
 - `EffectEngine` computes the animation phase in f64 (wrapped to one cycle) so animations stay smooth after days of uptime; added `compute_at(elapsed)`.
 - Kept docs: `docs/development/gamesense-api.md`, `gg-gamesense-engine.md`.
+- `input::Remapper::new` accepts an empty binding set (MasterKeys runs it for pass-through around macros); the empty check moved to `input::linux::run`.

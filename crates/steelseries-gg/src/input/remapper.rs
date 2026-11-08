@@ -83,9 +83,6 @@ pub struct Remapper {
 
 impl Remapper {
     pub fn new(bindings: &BindingSet, config: RemapperConfig) -> Result<Self> {
-        if bindings.is_empty() {
-            return Err(Error::InvalidConfig("no key bindings configured".to_string()));
-        }
         if config.escape_hold.is_zero() {
             return Err(Error::InvalidConfig("escape hold time must be above zero".to_string()));
         }
@@ -427,7 +424,8 @@ mod tests {
 
     #[test]
     fn new_rejects_empty_bindings_and_zero_hold() {
-        assert!(Remapper::new(&BindingSet::default(), RemapperConfig::default()).is_err());
+        // Empty bindings are allowed: MasterKeys uses the remapper for pass-through around macros.
+        assert!(Remapper::new(&BindingSet::default(), RemapperConfig::default()).is_ok());
         let set = BindingSet::from_pairs([(k("a"), Action::Key(k("b")))]).unwrap();
         let zero = RemapperConfig {
             escape_hold: Duration::ZERO,

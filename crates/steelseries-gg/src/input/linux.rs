@@ -222,6 +222,9 @@ fn build_virtual_device(targets: &[(PathBuf, Device)], bindings: &BindingSet) ->
 /// Grab the matching keyboards and remap until `stop` is set, the escape chord fires or an error
 /// occurs. Blocks; run it on a dedicated thread. Every grab is released before it returns.
 pub fn run(bindings: &BindingSet, product_filter: Option<u16>, stop: &AtomicBool) -> Result<()> {
+    if bindings.is_empty() {
+        return Err(Error::InvalidConfig("no key bindings configured".to_string()));
+    }
     let remapper = Remapper::new(bindings, RemapperConfig::default())?;
 
     let targets = find_targets(product_filter);
