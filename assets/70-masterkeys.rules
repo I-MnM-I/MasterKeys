@@ -1,0 +1,11 @@
+# MasterKeys: let the logged-in user drive the SteelSeries Apex 3 (1038:161a)
+# lighting (hidraw), read its keys (evdev, for remapping) and create a virtual
+# keyboard (uinput).
+#
+# Install:
+#   sudo cp assets/70-masterkeys.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+
+KERNEL=="hidraw*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="161a", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="161a", TAG+="uaccess"
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
