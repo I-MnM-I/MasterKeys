@@ -3,6 +3,7 @@
 //! Device library for the SteelSeries Apex 3 (1038:161a), trimmed from
 //! steelseriesgg-rs. See UPSTREAM.md.
 
+pub mod apex3;
 pub mod config;
 pub mod error;
 pub mod fs_utils;

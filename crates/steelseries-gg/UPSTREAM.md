@@ -12,4 +12,5 @@ at commit `84a015293606db70f39dc1e857b264648db3e489`, on 2026-11-08.
   (`PerKeyEffect`, `PerKeyEffectEngine`, `PerKeyRgbController`). The Apex 3 is zone-lit; its I/O lives in
   `apex3` (protocol verified on hardware, see `docs/apex3-protocol.md` in the workspace root).
 - `performance` reduced to `EffectComplexity` + `calculate_effect_complexity` (used by the RGB engine).
+- Added `apex3` sync API (report builders + `Apex3Device`), protocol inlined from the hardware probe.
 - Kept docs: `docs/development/gamesense-api.md`, `gg-gamesense-engine.md`.
