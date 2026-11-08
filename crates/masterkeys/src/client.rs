@@ -2,8 +2,9 @@
 
 use futures_util::StreamExt;
 use masterkeys_core::dbus::{BUS_NAME, DaemonProxy};
+use masterkeys_core::bindings::Macro;
 use masterkeys_core::profile::ProfileSummary;
-use masterkeys_core::{LightingState, StateReport, to_hex};
+use masterkeys_core::{StateReport, to_hex};
 use std::collections::HashSet;
 use std::time::Duration;
 use steelseries_gg::rgb::{Color, Effect};
@@ -22,6 +23,13 @@ pub enum Command {
     RenameProfile(String, String),
     SetExecutables(String, Vec<String>),
     SetDefault(String),
+    SetRemap(String, String),
+    ClearRemap(String),
+    SetMacro(String, Macro),
+    ClearMacro(String),
+    StartRecording,
+    /// Stop recording and put the macro on this key.
+    StopRecording(String),
     StartDaemon,
 }
 
@@ -46,8 +54,8 @@ impl Status {
 #[derive(Clone, Debug)]
 pub enum Event {
     Status(Status),
-    /// The lighting and the active profile's name.
-    State(LightingState, String),
+    /// The lighting, active profile, its bindings and what the daemon does with the keys.
+    State(Box<StateReport>),
     Profiles(Vec<ProfileSummary>),
     Key(u16, bool),
     Error(String),
@@ -151,7 +159,7 @@ async fn session(
             *status = Some(now);
             on_event(Event::Status(now));
         }
-        on_event(Event::State(r.state, r.profile));
+        on_event(Event::State(Box::new(r)));
     };
     report(serde_json::from_str(&proxy.get_state().await?).map_err(json_error)?, &mut status);
     list_profiles(&proxy, on_event).await?;
@@ -234,6 +242,15 @@ async fn send(proxy: &DaemonProxy<'_>, command: Command) -> zbus::Result<()> {
             proxy.set_profile_executables(&name, &exes).await
         }
         Command::SetDefault(name) => proxy.set_default_profile(&name).await,
+        Command::SetRemap(key, target) => proxy.set_remap(&key, &target).await,
+        Command::ClearRemap(key) => proxy.clear_remap(&key).await,
+        Command::SetMacro(key, m) => proxy.set_macro(&key, &serde_json::to_string(&m).map_err(json_error)?).await,
+        Command::ClearMacro(key) => proxy.clear_macro(&key).await,
+        Command::StartRecording => proxy.start_macro_recording().await,
+        Command::StopRecording(key) => {
+            let json = proxy.stop_macro_recording().await?;
+            proxy.set_macro(&key, &json).await
+        }
         Command::StartDaemon => Ok(()),
     }
 }

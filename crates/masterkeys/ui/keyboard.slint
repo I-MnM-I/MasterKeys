@@ -10,6 +10,8 @@ export struct KeyView {
     text-color: color,
     pressed: bool,
     selected: bool,
+    focused: bool,
+    marked: bool,
 }
 
 export component Keyboard inherits Rectangle {
@@ -29,8 +31,19 @@ export component Keyboard inherits Rectangle {
         height: key.h * root.unit - 4px;
         border-radius: 5px;
         background: key.color;
-        border-width: key.pressed ? 3px : (key.selected ? 2px : 1px);
-        border-color: key.pressed ? #ffffff : (key.selected ? #ffd54a : #00000060);
+        border-width: key.pressed || key.focused ? 3px : (key.selected ? 2px : 1px);
+        border-color: key.pressed ? #ffffff : (key.focused ? #4fc3f7 : (key.selected ? #ffd54a : #00000060));
+
+        if key.marked: Rectangle {
+            x: parent.width - 9px;
+            y: 3px;
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: #4fc3f7;
+            border-width: 1px;
+            border-color: #000000;
+        }
 
         Text {
             text: key.label;

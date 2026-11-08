@@ -4,12 +4,15 @@ slint::include_modules!();
 
 use masterkeys::client::{self, Command, Event, Status};
 use masterkeys::effects::{EffectKind, build, kind_of, parse_color_input};
-use masterkeys::view::{key_colors, reselect};
+use masterkeys::view::{binding_text, key_colors, key_name, marked, reselect};
+use masterkeys_core::InputStatus;
+use masterkeys_core::bindings::Macro;
+use std::collections::BTreeMap;
 use masterkeys_core::layout::Layout;
 use masterkeys_core::process;
 use masterkeys_core::profile::ProfileSummary;
 use masterkeys_core::render::Renderer;
-use masterkeys_core::{LightingState, to_hex};
+use masterkeys_core::{LightingState, StateReport, to_hex};
 use slint::{Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
@@ -49,6 +52,12 @@ struct App {
     selected_profile: Option<String>,
     /// A rename sent to the daemon and not yet seen in a profile list: (old, new).
     pending_rename: Option<(String, String)>,
+    remaps: BTreeMap<String, String>,
+    macros: BTreeMap<String, Macro>,
+    /// The key the Key panel is about (layout index).
+    selected_key: Option<usize>,
+    select_by_press: bool,
+    recording: bool,
     commands: UnboundedSender<Command>,
 }
 
@@ -124,6 +133,32 @@ fn link_program(app: &App, exe: &str) {
     app.send(Command::SetExecutables(profile.name.clone(), exes));
 }
 
+/// Show the selected key's bindings in the Key panel.
+fn show_key_panel(ui: &MainWindow, app: &App) {
+    let Some(key) = app.selected_key.and_then(|i| app.layout.keys.get(i)) else {
+        ui.set_key_title("".into());
+        return;
+    };
+    ui.set_key_title(format!("Key: {}", key.label).into());
+    ui.set_key_binding(binding_text(key.code, &app.remaps, &app.macros).into());
+    ui.set_key_remappable(key_name(key.code).is_some());
+    ui.set_recording(app.recording);
+}
+
+/// Select a key (layout index): its zone for colours and the key for the Key panel.
+fn select_key(ui: &MainWindow, app: &mut App, i: usize) {
+    let Some(zone) = app.layout.keys.get(i).map(|k| k.zone) else { return };
+    app.selected_key = Some(i);
+    app.selected_zone = Some(zone);
+    ui.set_selected_zone(i32::from(zone));
+    let color = app.renderer.current_colors()[usize::from(zone)];
+    app.active_slot = 0;
+    ui.set_active_slot(0);
+    set_slot(ui, app, 0, color);
+    ui.set_remap_target("".into());
+    show_key_panel(ui, app);
+}
+
 fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
     match event {
         Event::Status(status) => {
@@ -136,7 +171,18 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
             show_profiles(ui, app);
             app.pending_rename = None;
         }
-        Event::State(state, profile) => {
+        Event::State(report) => {
+            let StateReport { state, profile, remaps, macros, input, .. } = *report;
+            app.remaps = remaps;
+            app.macros = macros;
+            show_key_panel(ui, app);
+            let (message, udev) = match input {
+                InputStatus::Unavailable(m) => (m, true),
+                InputStatus::Stopped(m) => (m, false),
+                _ => (String::new(), false),
+            };
+            ui.set_input_message(message.into());
+            ui.set_show_udev_command(udev);
             if profile != app.active_profile {
                 app.active_profile = profile;
                 show_profiles(ui, app);
@@ -157,6 +203,13 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
         }
         Event::Key(code, true) => {
             app.pressed.insert(code);
+            if app.select_by_press && !app.recording {
+                app.select_by_press = false;
+                ui.set_select_by_press(false);
+                if let Some(i) = app.layout.keys.iter().position(|k| k.code == code) {
+                    select_key(ui, app, i);
+                }
+            }
         }
         Event::Key(code, false) => {
             app.pressed.remove(&code);
@@ -179,6 +232,8 @@ fn refresh_keys(app: &mut App, model: &VecModel<KeyView>) {
             text_color: text_color(color),
             pressed: app.pressed.contains(&key.code),
             selected: app.selected_zone == Some(key.zone),
+            focused: app.selected_key == Some(i),
+            marked: marked(key.code, &app.remaps, &app.macros),
         };
         if model.row_data(i).as_ref() != Some(&view) {
             model.set_row_data(i, view);
@@ -218,6 +273,11 @@ fn main() -> Result<(), slint::PlatformError> {
         active_profile: String::new(),
         selected_profile: None,
         pending_rename: None,
+        remaps: BTreeMap::new(),
+        macros: BTreeMap::new(),
+        selected_key: None,
+        select_by_press: false,
+        recording: false,
         commands,
     }));
     {
@@ -230,14 +290,52 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     ui.on_key_clicked(move |i| {
         let (Some(ui), Ok(i)) = (weak.upgrade(), usize::try_from(i)) else { return };
+        select_key(&ui, &mut a.borrow_mut(), i);
+    });
+
+    let a = app.clone();
+    ui.on_remap_clicked(move |target| {
+        let app = a.borrow();
+        if let Some(name) = app.selected_key.and_then(|i| app.layout.keys.get(i)).and_then(|k| key_name(k.code)) {
+            app.send(Command::SetRemap(name.into(), target.trim().to_string()));
+        }
+    });
+
+    let weak = ui.as_weak();
+    let a = app.clone();
+    ui.on_record_clicked(move || {
+        let Some(ui) = weak.upgrade() else { return };
         let mut app = a.borrow_mut();
-        let Some(zone) = app.layout.keys.get(i).map(|k| k.zone) else { return };
-        app.selected_zone = Some(zone);
-        ui.set_selected_zone(i32::from(zone));
-        let color = app.renderer.current_colors()[usize::from(zone)];
-        app.active_slot = 0;
-        ui.set_active_slot(0);
-        set_slot(&ui, &mut app, 0, color);
+        let Some(name) = app.selected_key.and_then(|i| app.layout.keys.get(i)).and_then(|k| key_name(k.code)) else {
+            return;
+        };
+        let command = if app.recording { Command::StopRecording(name.into()) } else { Command::StartRecording };
+        app.recording = !app.recording;
+        app.send(command);
+        show_key_panel(&ui, &app);
+    });
+
+    let a = app.clone();
+    ui.on_reset_key(move || {
+        let app = a.borrow();
+        let Some(name) = app.selected_key.and_then(|i| app.layout.keys.get(i)).and_then(|k| key_name(k.code)) else {
+            return;
+        };
+        if app.remaps.contains_key(name) {
+            app.send(Command::ClearRemap(name.into()));
+        }
+        if app.macros.contains_key(name) {
+            app.send(Command::ClearMacro(name.into()));
+        }
+    });
+
+    let weak = ui.as_weak();
+    let a = app.clone();
+    ui.on_select_by_press_clicked(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut app = a.borrow_mut();
+        app.select_by_press = !app.select_by_press;
+        ui.set_select_by_press(app.select_by_press);
     });
 
     let weak = ui.as_weak();

@@ -81,14 +81,14 @@ impl Harness {
 async fn initial_state_and_status() {
     let mut h = start().await;
     assert!(matches!(h.next().await, Event::Status(Status::KeyboardNotFound)));
-    assert!(matches!(h.next().await, Event::State(s, _) if s == LightingState::default()));
+    assert!(matches!(h.next().await, Event::State(r) if r.state == LightingState::default()));
 }
 
 #[tokio::test]
 async fn commands_reach_the_daemon() {
     let mut h = start().await;
     h.commands.send(Command::SetAll(Color::RED)).unwrap();
-    h.until(|e| matches!(e, Event::State(s, _) if s.effect == Effect::Static { color: Color::RED })).await;
+    h.until(|e| matches!(e, Event::State(r) if r.state.effect == Effect::Static { color: Color::RED })).await;
     assert_eq!(h.state.borrow().effect, Effect::Static { color: Color::RED });
 }
 
@@ -140,5 +140,28 @@ async fn create_and_activate_profile() {
     h.commands.send(Command::CreateProfile("A".into())).unwrap();
     h.until(|e| matches!(e, Event::Profiles(list) if list.iter().any(|p| p.name == "A"))).await;
     h.commands.send(Command::ActivateProfile("A".into())).unwrap();
-    h.until(|e| matches!(e, Event::State(_, name) if name == "A")).await;
+    h.until(|e| matches!(e, Event::State(r) if r.profile == "A")).await;
+}
+
+#[tokio::test]
+async fn remap_command_reaches_the_daemon() {
+    let mut h = start().await;
+    h.until(|e| matches!(e, Event::Profiles(_))).await;
+    h.commands.send(Command::SetRemap("caps_lock".into(), "esc".into())).unwrap();
+    h.until(|e| matches!(e, Event::State(r) if r.remaps.get("caps_lock").map(String::as_str) == Some("esc"))).await;
+    h.commands.send(Command::ClearRemap("caps_lock".into())).unwrap();
+    h.until(|e| matches!(e, Event::State(r) if r.remaps.is_empty())).await;
+}
+
+#[tokio::test]
+async fn recording_puts_a_macro_on_the_key() {
+    let mut h = start().await;
+    h.until(|e| matches!(e, Event::Profiles(_))).await;
+    h.commands.send(Command::StartRecording).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.keys.send((30, true)).await.unwrap();
+    h.keys.send((30, false)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.commands.send(Command::StopRecording("f1".into())).unwrap();
+    h.until(|e| matches!(e, Event::State(r) if r.macros.contains_key("f1"))).await;
 }

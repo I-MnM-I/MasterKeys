@@ -1,7 +1,10 @@
 //! What each key in the drawing should look like.
 
 use masterkeys_core::layout::Layout;
+use masterkeys_core::bindings::{Macro, MacroStep};
 use masterkeys_core::profile::ProfileSummary;
+use std::collections::BTreeMap;
+use steelseries_gg::input::InputKey;
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::Color;
 
@@ -9,6 +12,30 @@ use steelseries_gg::rgb::Color;
 pub fn key_colors(layout: &Layout, frame: &[Color; ZONE_COUNT], brightness: u8) -> Vec<Color> {
     let scale = f32::from(brightness.min(100)) / 100.0;
     layout.keys.iter().map(|k| frame[usize::from(k.zone).min(ZONE_COUNT - 1)].scale(scale)).collect()
+}
+
+/// The key name bindings use for an evdev code, if the key can be remapped.
+pub fn key_name(code: u16) -> Option<&'static str> {
+    InputKey::from_code(code).name()
+}
+
+/// What a key does in the active profile, for the Key panel.
+pub fn binding_text(code: u16, remaps: &BTreeMap<String, String>, macros: &BTreeMap<String, Macro>) -> String {
+    let Some(name) = key_name(code) else { return "Not remappable".into() };
+    if let Some(target) = remaps.get(name) {
+        return format!("Remapped to {target}");
+    }
+    if let Some(m) = macros.get(name) {
+        let keys = m.steps.iter().filter(|s| !matches!(s, MacroStep::Delay(_))).count();
+        let ms: u32 = m.steps.iter().map(|s| if let MacroStep::Delay(d) = s { *d } else { 0 }).sum();
+        return format!("Macro: {keys} steps, {:.1} s", f64::from(ms) / 1000.0);
+    }
+    "Default".into()
+}
+
+/// Whether a key has a remap or macro, for the marker on the drawing.
+pub fn marked(code: u16, remaps: &BTreeMap<String, String>, macros: &BTreeMap<String, Macro>) -> bool {
+    key_name(code).is_some_and(|n| remaps.contains_key(n) || macros.contains_key(n))
 }
 
 /// Which profile the panel should select after the daemon sends a new list: the new name of a
@@ -34,10 +61,38 @@ pub fn reselect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use masterkeys_core::bindings::{Macro, MacroStep};
     use masterkeys_core::profile::ProfileSummary;
+    use std::collections::BTreeMap;
 
     fn summaries(names: &[&str]) -> Vec<ProfileSummary> {
         names.iter().map(|n| ProfileSummary { name: n.to_string(), executables: vec![], is_default: false }).collect()
+    }
+
+    fn binds() -> (BTreeMap<String, String>, BTreeMap<String, Macro>) {
+        let remaps = BTreeMap::from([("caps_lock".to_string(), "esc".to_string())]);
+        let tap = Macro {
+            steps: vec![MacroStep::Down("h".into()), MacroStep::Delay(100), MacroStep::Up("h".into()), MacroStep::Delay(150)],
+        };
+        let macros = BTreeMap::from([("f1".to_string(), tap)]);
+        (remaps, macros)
+    }
+
+    #[test]
+    fn binding_texts() {
+        let (remaps, macros) = binds();
+        assert_eq!(binding_text(30, &remaps, &macros), "Default");
+        assert_eq!(binding_text(58, &remaps, &macros), "Remapped to esc");
+        assert_eq!(binding_text(59, &remaps, &macros), "Macro: 2 steps, 0.2 s");
+        assert_eq!(binding_text(0, &remaps, &macros), "Not remappable");
+    }
+
+    #[test]
+    fn marks() {
+        let (remaps, macros) = binds();
+        assert!(marked(58, &remaps, &macros));
+        assert!(marked(59, &remaps, &macros));
+        assert!(!marked(30, &remaps, &macros));
     }
 
     #[test]

@@ -96,6 +96,15 @@ export component MainWindow inherits Window {
     in property <[string]> running-programs;
     in-out property <bool> show-running: false;
 
+    in property <string> key-title: "";
+    in property <string> key-binding: "";
+    in property <bool> key-remappable: false;
+    in-out property <string> remap-target: "";
+    in property <bool> recording: false;
+    in property <bool> select-by-press: false;
+    in property <string> input-message: "";
+    in property <bool> show-udev-command: false;
+
     callback key-clicked(int);
     callback slot-selected(int);
     callback hex-edited(int, string);
@@ -115,6 +124,10 @@ export component MainWindow inherits Window {
     callback link-running-requested();
     callback link-program(string);
     callback browse-program();
+    callback remap-clicked(string);
+    callback record-clicked();
+    callback reset-key();
+    callback select-by-press-clicked();
 
     VerticalBox {
         padding: 12px;
@@ -130,6 +143,57 @@ export component MainWindow inherits Window {
                 keys: root.keys;
                 key-clicked(i) => {
                     root.key-clicked(i);
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            vertical-stretch: 0;
+            alignment: start;
+            Button {
+                text: root.select-by-press ? "Press a key on the keyboard…" : "Select by pressing";
+                enabled: root.daemon-running;
+                clicked => {
+                    root.select-by-press-clicked();
+                }
+            }
+            if root.key-title != "": GroupBox {
+                title: root.key-title;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.recording ? "Recording… press keys, then Stop" : root.key-binding;
+                        vertical-alignment: center;
+                        min-width: 180px;
+                    }
+                    LineEdit {
+                        width: 170px;
+                        text <=> root.remap-target;
+                        placeholder-text: "e.g. esc or left_ctrl+c";
+                        enabled: root.key-remappable && root.daemon-running && !root.recording;
+                    }
+                    Button {
+                        text: "Remap";
+                        enabled: root.key-remappable && root.daemon-running && !root.recording && root.remap-target != "";
+                        clicked => {
+                            root.remap-clicked(root.remap-target);
+                        }
+                    }
+                    Button {
+                        text: root.recording ? "Stop recording" : "Record macro";
+                        enabled: root.key-remappable && root.daemon-running;
+                        clicked => {
+                            root.record-clicked();
+                        }
+                    }
+                    Button {
+                        text: "Reset key";
+                        enabled: root.key-remappable && root.daemon-running && !root.recording && root.key-binding != "Default";
+                        clicked => {
+                            root.reset-key();
+                        }
+                    }
                 }
             }
         }
@@ -397,6 +461,16 @@ export component MainWindow inherits Window {
                 clicked => {
                     root.start-daemon();
                 }
+            }
+            if root.input-message != "": Text {
+                text: root.input-message;
+                color: #ffb300;
+                vertical-alignment: center;
+            }
+            if root.show-udev-command: LineEdit {
+                read-only: true;
+                width: 360px;
+                text: "sudo cp assets/70-masterkeys.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger";
             }
             Text {
                 text: root.error-text;
