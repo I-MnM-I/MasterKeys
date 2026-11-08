@@ -1,0 +1,266 @@
+//! Owns the keyboard: connects, reconnects with backoff, and sends frames as the state changes.
+
+use crate::device::{Lighting, Opener};
+use crate::render::Renderer;
+use masterkeys_core::LightingState;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use steelseries_gg::apex3::ZONE_COUNT;
+use steelseries_gg::rgb::Color;
+use tokio::sync::watch;
+use tracing::{info, warn};
+
+/// Channels between the output loop and the D-Bus service.
+pub struct Shared {
+    /// Latest wanted state; a watch keeps only the newest value, so bursts coalesce.
+    pub state: watch::Receiver<LightingState>,
+    pub connected: watch::Sender<bool>,
+    /// The frame last sent, for `SetZoneColor`.
+    pub frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
+}
+
+/// Reconnect delays: start at `initial`, double after each failed open, stop at `max`.
+#[derive(Clone, Copy, Debug)]
+pub struct Backoff {
+    pub initial: Duration,
+    pub max: Duration,
+}
+
+impl Backoff {
+    pub const DEFAULT: Backoff = Backoff { initial: Duration::from_secs(1), max: Duration::from_secs(10) };
+}
+
+/// Run forever: keep the keyboard showing the wanted state.
+pub async fn run(mut opener: Opener, mut shared: Shared, backoff: Backoff) {
+    let mut renderer = Renderer::new();
+    loop {
+        let mut device = connect(&mut opener, backoff).await;
+        shared.connected.send_replace(true);
+        info!("keyboard connected");
+        let error = drive(device.as_mut(), &mut renderer, &mut shared).await;
+        shared.connected.send_replace(false);
+        warn!("keyboard write failed, reconnecting: {error}");
+        // Pause before reopening, so a board that opens but rejects writes can't spin this loop.
+        tokio::time::sleep(backoff.initial).await;
+    }
+}
+
+async fn connect(opener: &mut Opener, backoff: Backoff) -> Box<dyn Lighting> {
+    let mut delay = backoff.initial;
+    let mut reported = false;
+    loop {
+        match opener() {
+            Ok(device) => return device,
+            Err(e) => {
+                if !reported {
+                    info!("waiting for keyboard: {e}");
+                    reported = true;
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(backoff.max);
+            }
+        }
+    }
+}
+
+/// Send the state, then follow changes and animation ticks until a write fails.
+async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut Shared) -> steelseries_gg::Error {
+    let mut state = shared.state.borrow_and_update().clone();
+    renderer.set_state(&state);
+    if let Err(e) = device.set_brightness(state.brightness) {
+        return e;
+    }
+    loop {
+        let frame = renderer.frame();
+        if let Err(e) = device.set_zones(&frame) {
+            return e;
+        }
+        *shared.frame.lock().unwrap() = frame;
+
+        let next = renderer.next_frame_in();
+        tokio::select! {
+            changed = shared.state.changed() => {
+                if changed.is_err() {
+                    // The service is gone (shutting down): keep the last frame showing.
+                    std::future::pending::<()>().await;
+                }
+                let new = shared.state.borrow_and_update().clone();
+                if new.brightness != state.brightness
+                    && let Err(e) = device.set_brightness(new.brightness)
+                {
+                    return e;
+                }
+                if new.effect != state.effect {
+                    renderer.set_state(&new);
+                }
+                state = new;
+            }
+            _ = sleep_for(next) => {}
+        }
+    }
+}
+
+async fn sleep_for(delay: Option<Duration>) {
+    match delay {
+        Some(d) => tokio::time::sleep(d).await,
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::{Lighting, Opener};
+    use masterkeys_core::LightingState;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use steelseries_gg::apex3::ZONE_COUNT;
+    use steelseries_gg::rgb::{Color, Effect};
+    use tokio::sync::watch;
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Call {
+        Zones([Color; ZONE_COUNT]),
+        Brightness(u8),
+    }
+
+    /// Records calls; the write numbered `fail_at` (1-based, counted across all fakes) fails.
+    struct Fake {
+        calls: Arc<Mutex<Vec<Call>>>,
+        writes: Arc<AtomicUsize>,
+        fail_at: usize,
+    }
+
+    impl Fake {
+        fn write(&mut self, call: Call) -> steelseries_gg::Result<()> {
+            if self.writes.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_at {
+                return Err(steelseries_gg::Error::DeviceCommunication("unplugged".into()));
+            }
+            self.calls.lock().unwrap().push(call);
+            Ok(())
+        }
+    }
+
+    impl Lighting for Fake {
+        fn set_zones(&mut self, c: &[Color; ZONE_COUNT]) -> steelseries_gg::Result<()> {
+            self.write(Call::Zones(*c))
+        }
+        fn set_brightness(&mut self, p: u8) -> steelseries_gg::Result<()> {
+            self.write(Call::Brightness(p))
+        }
+    }
+
+    struct Harness {
+        calls: Arc<Mutex<Vec<Call>>>,
+        opens: Arc<AtomicUsize>,
+        state: watch::Sender<LightingState>,
+        connected: watch::Receiver<bool>,
+    }
+
+    impl Harness {
+        fn calls(&self) -> Vec<Call> {
+            self.calls.lock().unwrap().clone()
+        }
+        fn count(&self, pred: impl Fn(&Call) -> bool) -> usize {
+            self.calls().iter().filter(|c| pred(c)).count()
+        }
+    }
+
+    /// Start the loop; opening fails `fail_opens` times first, and write number `fail_at` fails.
+    fn start(fail_opens: usize, fail_at: usize) -> Harness {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let opens = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let (state_tx, state_rx) = watch::channel(LightingState::default());
+        let (connected_tx, connected_rx) = watch::channel(false);
+        let (c, o, w) = (calls.clone(), opens.clone(), writes.clone());
+        let opener: Opener = Box::new(move || {
+            if o.fetch_add(1, Ordering::SeqCst) < fail_opens {
+                return Err(steelseries_gg::Error::DeviceNotFound("absent".into()));
+            }
+            Ok(Box::new(Fake { calls: c.clone(), writes: w.clone(), fail_at }) as Box<dyn Lighting>)
+        });
+        let shared = Shared {
+            state: state_rx,
+            connected: connected_tx,
+            frame: Arc::new(Mutex::new([Color::BLACK; ZONE_COUNT])),
+        };
+        tokio::spawn(run(opener, shared, Backoff::DEFAULT));
+        Harness { calls, opens, state: state_tx, connected: connected_rx }
+    }
+
+    async fn wait(secs: f32) {
+        tokio::time::sleep(Duration::from_secs_f32(secs)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absent_keyboard_then_connects_and_applies_state() {
+        let h = start(2, 0);
+        wait(0.5).await;
+        assert!(!*h.connected.borrow());
+        assert!(h.calls().is_empty());
+        wait(5.0).await; // backoff 1s + 2s
+        assert_eq!(h.opens.load(Ordering::SeqCst), 3);
+        assert!(*h.connected.borrow());
+        assert_eq!(h.calls(), vec![Call::Brightness(100), Call::Zones([Color::WHITE; ZONE_COUNT])]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn write_error_drops_device_and_reconnects() {
+        let h = start(0, 2); // the first Zones write fails
+        wait(0.1).await;
+        assert!(!*h.connected.borrow(), "dropped after the failed write");
+        wait(2.0).await;
+        assert_eq!(h.opens.load(Ordering::SeqCst), 2);
+        assert!(*h.connected.borrow());
+        // first connection got Brightness only; the reconnect re-applied the whole state
+        assert_eq!(
+            h.calls(),
+            vec![Call::Brightness(100), Call::Brightness(100), Call::Zones([Color::WHITE; ZONE_COUNT])]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_change_resends_frame_and_only_changed_brightness() {
+        let h = start(0, 0);
+        wait(0.1).await;
+        h.state.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, brightness: 100 });
+        wait(0.1).await;
+        assert_eq!(h.calls().last(), Some(&Call::Zones([Color::RED; ZONE_COUNT])));
+        assert_eq!(h.count(|c| matches!(c, Call::Brightness(_))), 1);
+        h.state.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, brightness: 30 });
+        wait(0.1).await;
+        assert!(h.calls().contains(&Call::Brightness(30)));
+        assert_eq!(h.count(|c| matches!(c, Call::Brightness(_))), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rapid_changes_coalesce_to_latest() {
+        let h = start(0, 0);
+        wait(0.1).await;
+        for b in 51..=100u8 {
+            h.state.send_replace(LightingState { effect: Effect::Off, brightness: b - 50 });
+        }
+        wait(0.1).await;
+        let brightness: Vec<_> = h.calls().into_iter().filter_map(|c| match c {
+            Call::Brightness(b) => Some(b),
+            _ => None,
+        }).collect();
+        assert_eq!(brightness.last(), Some(&50));
+        assert!(brightness.len() < 50, "{brightness:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn animation_sends_frames_on_a_timer() {
+        let h = start(0, 0);
+        wait(0.1).await;
+        h.state.send_replace(LightingState { effect: Effect::Spectrum { speed: 1.0 }, brightness: 100 });
+        wait(0.01).await;
+        let before = h.count(|c| matches!(c, Call::Zones(_)));
+        wait(1.0).await;
+        let frames = h.count(|c| matches!(c, Call::Zones(_))) - before;
+        // 16 ms cap: frames at 0, 16, ..., 992 ms is at most 63
+        assert!((30..=63).contains(&frames), "{frames} frames in 1s");
+    }
+}
