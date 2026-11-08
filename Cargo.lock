@@ -2818,6 +2818,7 @@ dependencies = [
  "serde",
  "serde_json",
  "steelseries-gg",
+ "tempfile",
  "toml",
  "zbus 6.2.1",
 ]

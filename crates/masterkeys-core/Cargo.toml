@@ -13,3 +13,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
 zbus = { version = "6.2.1", default-features = false, features = ["tokio", "proxy"] }
+
+[dev-dependencies]
+tempfile = "3"
