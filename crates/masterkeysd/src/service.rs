@@ -76,7 +76,8 @@ fn invalid(message: String) -> ServiceError {
     ServiceError::InvalidArgument(message)
 }
 
-#[interface(name = "org.masterkeys.Daemon1")]
+// `spawn = false`: calls run one at a time, so read-modify-write setters (SetZoneColor) never race.
+#[interface(name = "org.masterkeys.Daemon1", spawn = false)]
 impl DaemonService {
     /// JSON `StateReport`: the lighting state plus whether the keyboard is connected.
     fn get_state(&self) -> String {

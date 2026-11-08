@@ -361,8 +361,11 @@ impl EffectEngine {
     /// Uses caching to avoid unnecessary recomputation.
     #[inline]
     pub fn compute(&mut self) -> &[Color] {
-        let elapsed = self.start_time.elapsed();
+        self.compute_at(self.start_time.elapsed())
+    }
 
+    /// Compute colors as they are `elapsed` after the effect started.
+    pub fn compute_at(&mut self, elapsed: Duration) -> &[Color] {
         // Return cached colors if delta is below threshold (but always compute on first call)
         if self.last_compute_time != Duration::ZERO
             && elapsed.saturating_sub(self.last_compute_time) < self.cache_threshold
@@ -370,7 +373,9 @@ impl EffectEngine {
             return &self.cached_colors;
         }
 
-        let elapsed_secs = elapsed.as_secs_f32();
+        // Position within the current cycle, 0..1. Computed in f64 and wrapped before narrowing, because
+        // f32 seconds lose sub-second precision after a few days of uptime.
+        let cycle = |speed: f32| (elapsed.as_secs_f64() * f64::from(speed)).rem_euclid(1.0) as f32;
 
         // Reuse cached vector to avoid allocations - use truncate instead of clear + resize
         self.cached_colors.clear();
@@ -383,7 +388,7 @@ impl EffectEngine {
 
             Effect::Breathing { color, speed } => {
                 // Sine wave for breathing effect - use optimized sin approximation for better performance
-                let t = (elapsed_secs * speed * 2.0 * std::f32::consts::PI).sin();
+                let t = (cycle(*speed) * 2.0 * std::f32::consts::PI).sin();
                 let brightness = (t + 1.0) * 0.5; // Use multiplication instead of division
                 let scaled_color = color.scale(brightness);
                 self.cached_colors
@@ -392,7 +397,7 @@ impl EffectEngine {
 
             Effect::Spectrum { speed } => {
                 // Cycle through hue
-                let hue = (elapsed_secs * speed * 360.0) % 360.0;
+                let hue = cycle(*speed) * 360.0;
                 let color = Color::from_hsv(hue, 1.0, 1.0);
                 self.cached_colors.extend(std::iter::repeat_n(color, self.zone_count));
             }
@@ -406,7 +411,7 @@ impl EffectEngine {
                     self.cached_colors
                         .extend(std::iter::repeat_n(Color::BLACK, self.zone_count));
                 } else {
-                    let phase = elapsed_secs * speed;
+                    let phase = cycle(*speed);
                     let zone_count_f32 = self.zone_count as f32;
                     let colors_len_f32 = colors.len() as f32;
                     let center = zone_count_f32 * 0.5; // Pre-calculate center
@@ -703,5 +708,16 @@ mod tests {
         for color in colors {
             assert_eq!(*color, Color::RED);
         }
+    }
+
+    #[test]
+    fn animations_keep_precision_after_days_of_uptime() {
+        // 6 days at 0.5 cycles/s is a whole number of cycles, so 0.1 s later the hue must be 18 degrees.
+        let mut engine = EffectEngine::new(Effect::Spectrum { speed: 0.5 }, 1);
+        let six_days = Duration::from_secs(6 * 24 * 3600);
+        let got = engine.compute_at(six_days + Duration::from_millis(100))[0];
+        let want = Color::from_hsv(18.0, 1.0, 1.0);
+        let close = |a: u8, b: u8| a.abs_diff(b) <= 2;
+        assert!(close(got.r, want.r) && close(got.g, want.g) && close(got.b, want.b), "{got:?} vs {want:?}");
     }
 }

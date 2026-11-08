@@ -112,3 +112,16 @@ async fn set_zone_color_right_after_a_colour_change_uses_the_new_colour() {
     want[0] = Color::GREEN;
     assert_eq!(s.state.borrow().effect, Effect::Custom { colors: want });
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_zone_edits_are_all_kept() {
+    let s = serve().await;
+    for _ in 0..20 {
+        s.proxy.set_all_color("000000").await.unwrap();
+        let calls = (0..ZONE_COUNT as u8).map(|zone| s.proxy.set_zone_color(zone, "ff0000"));
+        for result in futures_util::future::join_all(calls).await {
+            result.unwrap();
+        }
+        assert_eq!(s.state.borrow().effect, Effect::Custom { colors: vec![Color::RED; ZONE_COUNT] });
+    }
+}
