@@ -3,8 +3,12 @@
 use futures_util::StreamExt;
 use masterkeys_core::dbus::{DaemonProxy, OBJECT_PATH};
 use masterkeys_core::{LightingState, StateReport};
+use masterkeys_core::profile::ProfileStore;
 use masterkeysd::keys::{KeyHub, emit_keys};
-use masterkeysd::service::DaemonService;
+use masterkeysd::persist::{load_profiles, saver};
+use masterkeysd::service::{DaemonCore, DaemonService};
+use std::path::Path;
+use std::time::Duration;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;
@@ -20,15 +24,37 @@ struct Served {
     keys: mpsc::Sender<(u16, bool)>,
     want_reader: watch::Receiver<bool>,
     _server: zbus::Connection,
+    _config: Option<tempfile::TempDir>,
 }
 
 async fn serve() -> Served {
-    let (state_tx, state_rx) = watch::channel(LightingState::default());
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = serve_in(dir.path()).await;
+    s._config = Some(dir);
+    s
+}
+
+/// Serve a daemon whose profiles live in `config` (with the saver running).
+async fn serve_in(config: &Path) -> Served {
+    let store = ProfileStore::new(config);
+    let (profiles, _warnings) = load_profiles(&store);
+    let (state_tx, state_rx) = watch::channel(profiles.active().lighting.clone());
     let (connected_tx, connected_rx) = watch::channel(false);
     let frame = Arc::new(Mutex::new([Color::WHITE; ZONE_COUNT]));
     let (hub, want_reader) = KeyHub::new();
     let (keys_tx, keys_rx) = mpsc::channel(16);
-    let service = DaemonService::new(state_tx, connected_rx, frame.clone(), hub.clone());
+    let (dirty_tx, dirty_rx) = watch::channel(1u64);
+    let profiles = Arc::new(Mutex::new(profiles));
+    tokio::spawn(saver(store, profiles.clone(), dirty_rx));
+    let core = DaemonCore {
+        state: Arc::new(state_tx),
+        connected: connected_rx,
+        frame: frame.clone(),
+        keys: hub.clone(),
+        profiles,
+        dirty: Arc::new(dirty_tx),
+    };
+    let service = DaemonService::new(core);
     let (a, b) = UnixStream::pair().unwrap();
     let server = Builder::unix_stream(a).server(Guid::generate()).p2p().serve_at(OBJECT_PATH, service);
     let client = Builder::unix_stream(b).p2p();
@@ -36,7 +62,7 @@ async fn serve() -> Served {
     let (server, client) = (server.unwrap(), client.unwrap());
     tokio::spawn(emit_keys(server.clone(), hub, keys_rx));
     let proxy = DaemonProxy::new(&client).await.unwrap();
-    Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, _server: server }
+    Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, _server: server, _config: None }
 }
 
 async fn report(s: &Served) -> StateReport {
@@ -150,4 +176,87 @@ async fn key_events_reach_subscribers_only_while_subscribed() {
     s.keys.send((31, true)).await.unwrap();
     let late = tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
     assert!(late.is_err(), "no key events after unsubscribing");
+}
+
+fn profile_file(config: &Path, name: &str) -> String {
+    std::fs::read_to_string(config.join(format!("profiles/{name}.toml"))).unwrap_or_default()
+}
+
+async fn settle_saver() {
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+}
+
+#[tokio::test]
+async fn edits_persist_to_the_active_profile_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = serve_in(dir.path()).await;
+    s.proxy.set_all_color("ff0000").await.unwrap();
+    settle_saver().await;
+    let file = profile_file(dir.path(), "Default");
+    assert!(file.contains("Static") && file.contains("r = 255"), "{file}");
+}
+
+#[tokio::test]
+async fn restart_restores_active_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let s = serve_in(dir.path()).await;
+        s.proxy.create_profile("Night").await.unwrap();
+        s.proxy.activate_profile("Night").await.unwrap();
+        s.proxy.set_brightness(20).await.unwrap();
+        settle_saver().await;
+    }
+    let s = serve_in(dir.path()).await;
+    let r = report(&s).await;
+    assert_eq!((r.profile.as_str(), r.state.brightness), ("Night", 20));
+    assert_eq!(s.state.borrow().brightness, 20, "output loop starts on the saved lighting");
+}
+
+#[tokio::test]
+async fn profile_crud_over_dbus() {
+    let s = serve().await;
+    let mut changes = s.proxy.receive_profiles_changed().await.unwrap();
+    let names = |json: String| -> Vec<String> {
+        let list: Vec<masterkeys_core::profile::ProfileSummary> = serde_json::from_str(&json).unwrap();
+        list.into_iter().map(|p| p.name).collect()
+    };
+    s.proxy.create_profile("A").await.unwrap();
+    assert_eq!(names(s.proxy.list_profiles().await.unwrap()), ["A", "Default"]);
+    s.proxy.rename_profile("A", "B").await.unwrap();
+    s.proxy.set_profile_executables("B", &["game.exe"]).await.unwrap();
+    s.proxy.delete_profile("B").await.unwrap();
+    assert_eq!(names(s.proxy.list_profiles().await.unwrap()), ["Default"]);
+    for _ in 0..4 {
+        tokio::time::timeout(Duration::from_secs(2), changes.next()).await.expect("ProfilesChanged").unwrap();
+    }
+}
+
+#[tokio::test]
+async fn refusals() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = serve_in(dir.path()).await;
+    settle_saver().await;
+    let before = profile_file(dir.path(), "Default");
+    let err = s.proxy.delete_profile("Default").await.unwrap_err().to_string();
+    assert!(err.contains("Refused"), "{err}");
+    let err = s.proxy.rename_profile("Default", "../x").await.unwrap_err().to_string();
+    assert!(err.contains("InvalidArgument"), "{err}");
+    settle_saver().await;
+    assert_eq!(profile_file(dir.path(), "Default"), before);
+    assert!(!dir.path().join("x.toml").exists());
+}
+
+#[tokio::test]
+async fn activate_switches_lighting() {
+    let s = serve().await;
+    s.proxy.set_all_color("ff0000").await.unwrap();
+    s.proxy.create_profile("B").await.unwrap();
+    s.proxy.activate_profile("B").await.unwrap();
+    s.proxy.set_all_color("0000ff").await.unwrap();
+    let mut states = s.proxy.receive_state_changed().await.unwrap();
+    s.proxy.activate_profile("Default").await.unwrap();
+    assert_eq!(s.state.borrow().effect, Effect::Static { color: Color::RED });
+    let signal = tokio::time::timeout(Duration::from_secs(2), states.next()).await.unwrap().unwrap();
+    let r: StateReport = serde_json::from_str(&signal.args().unwrap().state_json).unwrap();
+    assert_eq!(r.profile, "Default");
 }

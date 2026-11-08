@@ -4,7 +4,9 @@ use masterkeys::client::{Command, Event, Status, run_on};
 use masterkeys_core::LightingState;
 use masterkeys_core::dbus::OBJECT_PATH;
 use masterkeysd::keys::{KeyHub, emit_keys};
-use masterkeysd::service::DaemonService;
+use masterkeys_core::profile::ProfileStore;
+use masterkeysd::persist::load_profiles;
+use masterkeysd::service::{DaemonCore, DaemonService};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,6 +22,7 @@ struct Harness {
     connected: watch::Sender<bool>,
     keys: mpsc::Sender<(u16, bool)>,
     server: zbus::Connection,
+    _config: tempfile::TempDir,
 }
 
 async fn start() -> Harness {
@@ -28,7 +31,18 @@ async fn start() -> Harness {
     let frame = Arc::new(Mutex::new([Color::WHITE; ZONE_COUNT]));
     let (hub, _want) = KeyHub::new();
     let (keys_tx, keys_rx) = mpsc::channel(16);
-    let service = DaemonService::new(state_tx, connected_rx, frame, hub.clone());
+    let config = tempfile::tempdir().unwrap();
+    let (profiles, _) = load_profiles(&ProfileStore::new(config.path()));
+    let (dirty_tx, _dirty_rx) = watch::channel(0u64);
+    let core = DaemonCore {
+        state: Arc::new(state_tx),
+        connected: connected_rx,
+        frame,
+        keys: hub.clone(),
+        profiles: Arc::new(Mutex::new(profiles)),
+        dirty: Arc::new(dirty_tx),
+    };
+    let service = DaemonService::new(core);
     let (a, b) = UnixStream::pair().unwrap();
     let server = Builder::unix_stream(a).server(Guid::generate()).p2p().serve_at(OBJECT_PATH, service);
     let client = Builder::unix_stream(b).p2p();
@@ -41,7 +55,7 @@ async fn start() -> Harness {
     tokio::spawn(async move {
         run_on(client, &move |e| { let _ = event_tx.send(e); }, &mut command_rx).await;
     });
-    Harness { events, commands, state: state_rx, connected: connected_tx, keys: keys_tx, server }
+    Harness { events, commands, state: state_rx, connected: connected_tx, keys: keys_tx, server, _config: config }
 }
 
 impl Harness {

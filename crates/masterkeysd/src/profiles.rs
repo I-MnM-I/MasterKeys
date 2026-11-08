@@ -324,7 +324,7 @@ mod tests {
         let mut a = AutoSwitch::default();
         let elden = proc(5, 10, "eldenring.exe");
         let factorio = proc(6, 20, "factorio");
-        assert_eq!(a.update(&p, &[elden.clone()]).as_deref(), Some("Elden"));
+        assert_eq!(a.update(&p, std::slice::from_ref(&elden)).as_deref(), Some("Elden"));
         assert_eq!(a.update(&p, &[elden.clone(), factorio]).as_deref(), Some("Factorio"));
         assert_eq!(a.update(&p, &[elden]).as_deref(), Some("Elden"));
     }
@@ -334,7 +334,7 @@ mod tests {
         let mut p = three();
         let mut a = AutoSwitch::default();
         let elden = proc(5, 10, "eldenring.exe");
-        assert_eq!(a.update(&p, &[elden.clone()]).as_deref(), Some("Elden"));
+        assert_eq!(a.update(&p, std::slice::from_ref(&elden)).as_deref(), Some("Elden"));
         p.activate("Factorio").unwrap();
         assert_eq!(a.update(&p, &[elden]), None);
         assert_eq!(a.update(&p, &[]).as_deref(), Some("Default"));

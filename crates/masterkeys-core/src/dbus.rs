@@ -22,6 +22,16 @@ pub trait Daemon {
     /// JSON `Effect`.
     async fn set_effect(&self, effect_json: &str) -> zbus::Result<()>;
 
+    /// JSON list of `ProfileSummary`, sorted by name.
+    async fn list_profiles(&self) -> zbus::Result<String>;
+    async fn activate_profile(&self, name: &str) -> zbus::Result<()>;
+    /// A new profile copying the current lighting; not activated.
+    async fn create_profile(&self, name: &str) -> zbus::Result<()>;
+    async fn delete_profile(&self, name: &str) -> zbus::Result<()>;
+    async fn rename_profile(&self, old: &str, new: &str) -> zbus::Result<()>;
+    async fn set_profile_executables(&self, name: &str, executables: &[&str]) -> zbus::Result<()>;
+    async fn set_default_profile(&self, name: &str) -> zbus::Result<()>;
+
     /// Start receiving `KeyEvent` (sent only to subscribers, only while subscribed).
     async fn subscribe_keys(&self) -> zbus::Result<()>;
     async fn unsubscribe_keys(&self) -> zbus::Result<()>;
@@ -30,6 +40,8 @@ pub trait Daemon {
     fn state_changed(&self, state_json: String) -> zbus::Result<()>;
     #[zbus(signal)]
     fn device_connected(&self, connected: bool) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn profiles_changed(&self) -> zbus::Result<()>;
     /// `code` is the Linux evdev key code.
     #[zbus(signal)]
     fn key_event(&self, code: u16, pressed: bool) -> zbus::Result<()>;

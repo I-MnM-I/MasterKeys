@@ -2807,6 +2807,7 @@ dependencies = [
  "slint",
  "slint-build",
  "steelseries-gg",
+ "tempfile",
  "tokio",
  "zbus 6.2.1",
 ]
@@ -2832,6 +2833,7 @@ dependencies = [
  "masterkeys-core",
  "serde_json",
  "steelseries-gg",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

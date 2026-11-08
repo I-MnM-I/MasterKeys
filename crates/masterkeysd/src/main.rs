@@ -1,18 +1,19 @@
 //! masterkeysd: owns the SteelSeries Apex 3 and serves lighting control on the session bus.
 
-use masterkeys_core::LightingState;
 use masterkeys_core::dbus::{BUS_NAME, OBJECT_PATH};
+use masterkeys_core::profile::ProfileStore;
 use masterkeysd::device::apex3_opener;
 use masterkeysd::keys::{KeyHub, drop_vanished, emit_keys, run_reader};
 use masterkeysd::output::{self, Backoff, Shared};
-use masterkeysd::service::{DaemonService, watch_connection};
+use masterkeysd::persist::{flush, load_profiles, saver, watcher};
+use masterkeysd::service::{DaemonCore, DaemonService, watch_connection};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::Color;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 
@@ -23,12 +24,36 @@ async fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    let (state_tx, state_rx) = watch::channel(LightingState::default());
+    let Some(config_dir) = std::env::var_os("MASTERKEYS_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(ProfileStore::default_config_dir)
+    else {
+        error!("cannot find a config directory (HOME is not set)");
+        return ExitCode::FAILURE;
+    };
+    let store = ProfileStore::new(&config_dir);
+    let (profiles, warnings) = load_profiles(&store);
+    for warning in warnings {
+        warn!("profile {warning}");
+    }
+    info!("profile {:?} active (config in {})", profiles.active().name, config_dir.display());
+
+    let (state_tx, state_rx) = watch::channel(profiles.active().lighting.clone());
     let (connected_tx, connected_rx) = watch::channel(false);
     let frame = Arc::new(Mutex::new([Color::BLACK; ZONE_COUNT]));
+    let (dirty_tx, dirty_rx) = watch::channel(0u64);
+    let profiles = Arc::new(Mutex::new(profiles));
 
     let (keys, want_reader) = KeyHub::new();
-    let service = DaemonService::new(state_tx, connected_rx.clone(), frame.clone(), keys.clone());
+    let core = DaemonCore {
+        state: Arc::new(state_tx),
+        connected: connected_rx.clone(),
+        frame: frame.clone(),
+        keys: keys.clone(),
+        profiles: profiles.clone(),
+        dirty: Arc::new(dirty_tx),
+    };
+    let service = DaemonService::new(core.clone());
     let conn = match zbus::connection::Builder::session().serve_at(OBJECT_PATH, service).build().await {
         Ok(conn) => conn,
         Err(e) => {
@@ -57,6 +82,8 @@ async fn main() -> ExitCode {
     tokio::spawn(emit_keys(conn.clone(), keys.clone(), key_rx));
     tokio::spawn(drop_vanished(conn.clone(), keys));
     tokio::spawn(watch_connection(conn.clone(), connected_rx));
+    tokio::spawn(saver(store.clone(), profiles.clone(), dirty_rx));
+    tokio::spawn(watcher(core, conn.clone()));
 
     let (mut term, mut int) = match (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) {
         (Ok(t), Ok(i)) => (t, i),
@@ -69,7 +96,9 @@ async fn main() -> ExitCode {
         _ = term.recv() => {}
         _ = int.recv() => {}
     }
-    // Exit without touching the keyboard, so it keeps showing the last frame.
+    // Save any edits still waiting out the save delay. Exit without touching the keyboard, so it keeps
+    // showing the last frame.
+    flush(&store, &profiles);
     info!("shutting down");
     ExitCode::SUCCESS
 }

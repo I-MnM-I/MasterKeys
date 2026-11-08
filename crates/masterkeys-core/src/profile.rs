@@ -51,7 +51,16 @@ struct LegacyFile {
     zones: Vec<Color>,
 }
 
+/// One row of `ListProfiles`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProfileSummary {
+    pub name: String,
+    pub executables: Vec<String>,
+    pub is_default: bool,
+}
+
 /// Profiles in `<config>/profiles/*.toml`, settings in `<config>/settings.toml`.
+#[derive(Clone, Debug)]
 pub struct ProfileStore {
     dir: PathBuf,
     settings: PathBuf,

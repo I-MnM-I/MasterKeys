@@ -43,6 +43,9 @@ pub struct StateReport {
     #[serde(flatten)]
     pub state: LightingState,
     pub connected: bool,
+    /// Name of the active profile.
+    #[serde(default)]
+    pub profile: String,
 }
 
 /// Parse `RRGGBB` or `#RRGGBB`.
@@ -82,7 +85,7 @@ mod tests {
 
     #[test]
     fn report_flattens_state() {
-        let r = StateReport { state: LightingState::default(), connected: true };
+        let r = StateReport { state: LightingState::default(), connected: true, profile: "Default".into() };
         let v: serde_json::Value = serde_json::to_value(&r).unwrap();
         assert_eq!(v["brightness"], 100);
         assert_eq!(v["connected"], true);
