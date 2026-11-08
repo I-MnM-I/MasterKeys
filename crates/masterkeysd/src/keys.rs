@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use zbus::names::BusName;
 use zbus::object_server::SignalEmitter;
 
-const APEX3_PRODUCT: u16 = 0x161A;
+pub const APEX3_PRODUCT: u16 = 0x161A;
 /// How often to look for the keyboard's input nodes again after the reader ended.
 const READER_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 

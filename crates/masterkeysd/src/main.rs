@@ -3,7 +3,8 @@
 use masterkeys_core::dbus::{BUS_NAME, OBJECT_PATH};
 use masterkeys_core::profile::ProfileStore;
 use masterkeysd::device::apex3_opener;
-use masterkeysd::keys::{KeyHub, drop_vanished, emit_keys, run_reader};
+use masterkeysd::input::run_input;
+use masterkeysd::keys::{KeyHub, drop_vanished, emit_keys};
 use masterkeysd::output::{self, Backoff, Shared};
 use masterkeysd::persist::{flush, load_profiles, saver, watcher};
 use masterkeysd::service::{DaemonCore, DaemonService, watch_connection};
@@ -81,7 +82,7 @@ async fn main() -> ExitCode {
     let shared = Shared { state: state_rx, connected: connected_tx, frame };
     tokio::spawn(output::run(apex3_opener(), shared, Backoff::DEFAULT));
     let (key_tx, key_rx) = tokio::sync::mpsc::channel(256);
-    tokio::spawn(run_reader(want_reader, connected_rx.clone(), key_tx));
+    tokio::spawn(run_input(core.clone(), conn.clone(), want_reader, key_tx));
     tokio::spawn(emit_keys(conn.clone(), keys.clone(), key_rx));
     tokio::spawn(drop_vanished(conn.clone(), keys));
     tokio::spawn(watch_connection(conn.clone(), connected_rx));
