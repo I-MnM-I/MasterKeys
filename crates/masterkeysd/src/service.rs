@@ -1,7 +1,9 @@
 //! The org.masterkeys.Daemon1 D-Bus interface.
 
+use crate::keys::{KeyHub, P2P_PEER};
 use masterkeys_core::render::Renderer;
 use masterkeys_core::{LightingState, StateReport, parse_hex};
+use zbus::message::Header;
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::{Color, Effect};
@@ -24,6 +26,7 @@ pub struct DaemonService {
     state: watch::Sender<LightingState>,
     connected: watch::Receiver<bool>,
     frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
+    keys: KeyHub,
 }
 
 impl DaemonService {
@@ -31,8 +34,9 @@ impl DaemonService {
         state: watch::Sender<LightingState>,
         connected: watch::Receiver<bool>,
         frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
+        keys: KeyHub,
     ) -> Self {
-        Self { state, connected, frame }
+        Self { state, connected, frame, keys }
     }
 
     fn report_json(&self) -> String {
@@ -130,11 +134,28 @@ impl DaemonService {
         self.apply(self.with_effect(effect), &emitter).await
     }
 
+    /// Start sending this caller `KeyEvent` signals.
+    fn subscribe_keys(&self, #[zbus(header)] header: Header<'_>) {
+        self.keys.subscribe(caller(&header));
+    }
+
+    fn unsubscribe_keys(&self, #[zbus(header)] header: Header<'_>) {
+        self.keys.unsubscribe(&caller(&header));
+    }
+
     #[zbus(signal)]
     async fn state_changed(emitter: &SignalEmitter<'_>, state_json: String) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn device_connected(emitter: &SignalEmitter<'_>, connected: bool) -> zbus::Result<()>;
+
+    /// Sent only to subscribers (see `keys::emit_keys`).
+    #[zbus(signal)]
+    pub async fn key_event(emitter: &SignalEmitter<'_>, code: u16, pressed: bool) -> zbus::Result<()>;
+}
+
+fn caller(header: &Header<'_>) -> String {
+    header.sender().map_or_else(|| P2P_PEER.to_string(), |s| s.to_string())
 }
 
 /// Emit `DeviceConnected` on every connect/disconnect transition, until the output loop goes away.

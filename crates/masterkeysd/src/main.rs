@@ -3,6 +3,7 @@
 use masterkeys_core::LightingState;
 use masterkeys_core::dbus::{BUS_NAME, OBJECT_PATH};
 use masterkeysd::device::apex3_opener;
+use masterkeysd::keys::{KeyHub, drop_vanished, emit_keys, run_reader};
 use masterkeysd::output::{self, Backoff, Shared};
 use masterkeysd::service::{DaemonService, watch_connection};
 use std::process::ExitCode;
@@ -26,7 +27,8 @@ async fn main() -> ExitCode {
     let (connected_tx, connected_rx) = watch::channel(false);
     let frame = Arc::new(Mutex::new([Color::BLACK; ZONE_COUNT]));
 
-    let service = DaemonService::new(state_tx, connected_rx.clone(), frame.clone());
+    let (keys, want_reader) = KeyHub::new();
+    let service = DaemonService::new(state_tx, connected_rx.clone(), frame.clone(), keys.clone());
     let conn = match zbus::connection::Builder::session().serve_at(OBJECT_PATH, service).build().await {
         Ok(conn) => conn,
         Err(e) => {
@@ -51,6 +53,10 @@ async fn main() -> ExitCode {
     let shared = Shared { state: state_rx, connected: connected_tx, frame };
     tokio::spawn(output::run(apex3_opener(), shared, Backoff::DEFAULT));
     tokio::spawn(watch_connection(conn.clone(), connected_rx));
+    let (key_tx, key_rx) = tokio::sync::mpsc::channel(256);
+    tokio::spawn(run_reader(want_reader, key_tx));
+    tokio::spawn(emit_keys(conn.clone(), keys.clone(), key_rx));
+    tokio::spawn(drop_vanished(conn.clone(), keys));
 
     let (mut term, mut int) = match (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) {
         (Ok(t), Ok(i)) => (t, i),

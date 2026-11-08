@@ -3,12 +3,13 @@
 use futures_util::StreamExt;
 use masterkeys_core::dbus::{DaemonProxy, OBJECT_PATH};
 use masterkeys_core::{LightingState, StateReport};
+use masterkeysd::keys::{KeyHub, emit_keys};
 use masterkeysd::service::DaemonService;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::{Color, Effect};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use zbus::{Guid, connection::Builder};
 
 struct Served {
@@ -16,6 +17,8 @@ struct Served {
     state: watch::Receiver<LightingState>,
     connected: watch::Sender<bool>,
     frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
+    keys: mpsc::Sender<(u16, bool)>,
+    want_reader: watch::Receiver<bool>,
     _server: zbus::Connection,
 }
 
@@ -23,14 +26,17 @@ async fn serve() -> Served {
     let (state_tx, state_rx) = watch::channel(LightingState::default());
     let (connected_tx, connected_rx) = watch::channel(false);
     let frame = Arc::new(Mutex::new([Color::WHITE; ZONE_COUNT]));
-    let service = DaemonService::new(state_tx, connected_rx, frame.clone());
+    let (hub, want_reader) = KeyHub::new();
+    let (keys_tx, keys_rx) = mpsc::channel(16);
+    let service = DaemonService::new(state_tx, connected_rx, frame.clone(), hub.clone());
     let (a, b) = UnixStream::pair().unwrap();
     let server = Builder::unix_stream(a).server(Guid::generate()).p2p().serve_at(OBJECT_PATH, service);
     let client = Builder::unix_stream(b).p2p();
     let (server, client) = tokio::join!(server.build(), client.build());
     let (server, client) = (server.unwrap(), client.unwrap());
+    tokio::spawn(emit_keys(server.clone(), hub, keys_rx));
     let proxy = DaemonProxy::new(&client).await.unwrap();
-    Served { proxy, state: state_rx, connected: connected_tx, frame, _server: server }
+    Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, _server: server }
 }
 
 async fn report(s: &Served) -> StateReport {
@@ -124,4 +130,24 @@ async fn concurrent_zone_edits_are_all_kept() {
         }
         assert_eq!(s.state.borrow().effect, Effect::Custom { colors: vec![Color::RED; ZONE_COUNT] });
     }
+}
+
+#[tokio::test]
+async fn key_events_reach_subscribers_only_while_subscribed() {
+    let s = serve().await;
+    let mut events = s.proxy.receive_key_event().await.unwrap();
+    assert!(!*s.want_reader.borrow(), "no reader before anyone subscribes");
+
+    s.proxy.subscribe_keys().await.unwrap();
+    assert!(*s.want_reader.borrow());
+    s.keys.send((30, true)).await.unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.next()).await.unwrap().unwrap();
+    let args = event.args().unwrap();
+    assert_eq!((args.code, args.pressed), (30, true));
+
+    s.proxy.unsubscribe_keys().await.unwrap();
+    assert!(!*s.want_reader.borrow(), "reader stops with the last subscriber");
+    s.keys.send((31, true)).await.unwrap();
+    let late = tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+    assert!(late.is_err(), "no key events after unsubscribing");
 }

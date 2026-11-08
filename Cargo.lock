@@ -193,6 +193,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "nix 0.29.0",
+ "tokio",
 ]
 
 [[package]]
@@ -456,6 +457,7 @@ dependencies = [
 name = "masterkeysd"
 version = "0.1.0"
 dependencies = [
+ "evdev",
  "futures-util",
  "masterkeys-core",
  "serde_json",

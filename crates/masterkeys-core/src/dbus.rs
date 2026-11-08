@@ -22,8 +22,15 @@ pub trait Daemon {
     /// JSON `Effect`.
     async fn set_effect(&self, effect_json: &str) -> zbus::Result<()>;
 
+    /// Start receiving `KeyEvent` (sent only to subscribers, only while subscribed).
+    async fn subscribe_keys(&self) -> zbus::Result<()>;
+    async fn unsubscribe_keys(&self) -> zbus::Result<()>;
+
     #[zbus(signal)]
     fn state_changed(&self, state_json: String) -> zbus::Result<()>;
     #[zbus(signal)]
     fn device_connected(&self, connected: bool) -> zbus::Result<()>;
+    /// `code` is the Linux evdev key code.
+    #[zbus(signal)]
+    fn key_event(&self, code: u16, pressed: bool) -> zbus::Result<()>;
 }
