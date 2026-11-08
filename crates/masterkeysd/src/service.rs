@@ -1,6 +1,6 @@
 //! The org.masterkeys.Daemon1 D-Bus interface.
 
-use crate::render::Renderer;
+use masterkeys_core::render::Renderer;
 use masterkeys_core::{LightingState, StateReport, parse_hex};
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;

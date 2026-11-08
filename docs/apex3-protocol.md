@@ -24,5 +24,8 @@ The 10 zones are vertical bands across the full board, left to right:
 
 Method: zones 0–9 set to red, orange, yellow, green, cyan, blue, purple, pink,
 white, off — seen in order left → right; zone 9 alone lit the far right strip.
-Exact key-to-band boundaries are refined when the layout file is built
-(milestone 3).
+Exact key-to-band boundaries can't be seen: the zone LEDs bleed across keys,
+so with alternating colours there are no clean edges (checked 2026-11-08). The
+layout file (`assets/layouts/apex3-ansi.toml`) therefore assigns zones by key
+centre: `zone = floor(centre_x / 22.5 * 10)`, i.e. 10 equal-width bands over
+the full 22.5-unit board.

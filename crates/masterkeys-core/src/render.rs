@@ -1,6 +1,6 @@
 //! Turns the lighting state into zone frames over time.
 
-use masterkeys_core::LightingState;
+use crate::LightingState;
 use std::time::Duration;
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::{Color, Effect, EffectEngine};
@@ -55,7 +55,7 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use masterkeys_core::LightingState;
+    use crate::LightingState;
     use steelseries_gg::apex3::ZONE_COUNT;
     use steelseries_gg::rgb::{Color, Effect};
 

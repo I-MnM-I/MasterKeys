@@ -1,7 +1,7 @@
 //! Owns the keyboard: connects, reconnects with backoff, and sends frames as the state changes.
 
 use crate::device::{Lighting, Opener};
-use crate::render::Renderer;
+use masterkeys_core::render::Renderer;
 use masterkeys_core::LightingState;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
