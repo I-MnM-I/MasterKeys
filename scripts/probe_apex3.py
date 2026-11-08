@@ -7,6 +7,10 @@ Usage (run with `python3 -I`):
   probe_apex3.py brightness N
   probe_apex3.py walk
   probe_apex3.py raw HEX...        # send arbitrary bytes, padded to 33
+
+Developer tool with no guards: `raw` sends anything, including `00 09 00`
+(save_to_flash, writes the keyboard's stored settings), and `brightness`
+is not range-checked. Use the Rust apex3_smoke example for normal tests.
 """
 import glob
 import os

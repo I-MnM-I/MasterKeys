@@ -22,8 +22,8 @@ const CMD_BRIGHTNESS: u8 = 0x0A;
 pub fn colors_report(colors: &[Color; ZONE_COUNT]) -> [u8; REPORT_LEN] {
     let mut report = [0u8; REPORT_LEN];
     report[1] = CMD_COLORS;
-    for (slot, color) in report[3..].chunks_exact_mut(3).zip(colors) {
-        slot.copy_from_slice(&[color.r, color.g, color.b]);
+    for (slot, color) in report[3..].as_chunks_mut::<3>().0.iter_mut().zip(colors) {
+        *slot = [color.r, color.g, color.b];
     }
     report
 }
@@ -155,7 +155,9 @@ mod tests {
 
     #[test]
     fn permission_denied_open_error_points_at_udev_rule() {
-        let Error::PermissionDenied(msg) = open_error("Failed to open a device with path '/dev/hidraw4': Permission denied".into()) else {
+        let Error::PermissionDenied(msg) = open_error(
+            "hidapi error: failed to open device with path /dev/hidraw4: Permission denied (os error 13)".into(),
+        ) else {
             panic!("wrong variant")
         };
         assert!(msg.contains("70-masterkeys.rules"), "{msg}");
