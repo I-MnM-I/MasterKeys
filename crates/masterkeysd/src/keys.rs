@@ -12,6 +12,8 @@ use zbus::names::BusName;
 use zbus::object_server::SignalEmitter;
 
 const APEX3_PRODUCT: u16 = 0x161A;
+/// How often to look for the keyboard's input nodes again after the reader ended.
+const READER_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Merges key events from the board's interfaces (boot and NKRO both report keys) into one press/release
 /// per real key transition.
@@ -187,16 +189,45 @@ pub async fn emit_keys(conn: zbus::Connection, hub: KeyHub, mut events: mpsc::Re
 }
 
 /// Run the key reader whenever `want` is true, stopping it when it turns false.
-pub async fn run_reader(mut want: watch::Receiver<bool>, events: mpsc::Sender<(u16, bool)>) {
+pub async fn run_reader(want: watch::Receiver<bool>, connected: watch::Receiver<bool>, events: mpsc::Sender<(u16, bool)>) {
+    run_reader_with(want, connected, move |stop| read_keys(events.clone(), stop)).await
+}
+
+/// `run_reader` with the reader injected, for tests.
+///
+/// The reader ends by itself when the keyboard is unplugged (or was absent); while anyone is still
+/// subscribed it is started again once the keyboard reconnects.
+pub async fn run_reader_with<F, Fut>(mut want: watch::Receiver<bool>, connected: watch::Receiver<bool>, start: F)
+where
+    F: Fn(watch::Receiver<bool>) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     loop {
         if want.wait_for(|w| *w).await.is_err() {
             return;
         }
         let (stop_tx, stop_rx) = watch::channel(false);
-        let reader = tokio::spawn(read_keys(events.clone(), stop_rx));
-        let _ = want.wait_for(|w| !*w).await;
-        stop_tx.send_replace(true);
-        let _ = reader.await;
+        let mut reader = tokio::spawn(start(stop_rx));
+        tokio::select! {
+            _ = async { let _ = want.wait_for(|w| !*w).await; } => {
+                stop_tx.send_replace(true);
+                let _ = reader.await;
+            }
+            _ = &mut reader => {
+                // The reader ended by itself (keyboard unplugged, or its input nodes not there yet). Check
+                // again each second while the keyboard is connected; stop if nobody wants keys any more.
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(READER_RETRY) => {
+                            if *connected.borrow() {
+                                break;
+                            }
+                        }
+                        _ = async { let _ = want.wait_for(|w| !*w).await; } => break,
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -248,5 +279,46 @@ mod tests {
         assert!(s.remove(":1.6"));
         assert!(!s.remove(":1.9"));
         assert!(s.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reader_restarts_when_the_keyboard_reconnects() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let starts = Arc::new(AtomicUsize::new(0));
+        let (want_tx, want_rx) = watch::channel(false);
+        let (connected_tx, connected_rx) = watch::channel(true);
+        let s = starts.clone();
+        // A reader that ends at once, as when the keyboard is unplugged or absent.
+        tokio::spawn(run_reader_with(want_rx, connected_rx, move |_stop| {
+            s.fetch_add(1, Ordering::SeqCst);
+            async {}
+        }));
+        let settle = || tokio::time::sleep(std::time::Duration::from_millis(50));
+
+        want_tx.send_replace(true);
+        settle().await;
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+        // Keyboard away: no restarts.
+        connected_tx.send_replace(false);
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 1, "no restart while the keyboard is away");
+
+        // Back: restarted within the 1 s re-check.
+        connected_tx.send_replace(true);
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let after_replug = starts.load(Ordering::SeqCst);
+        assert!(after_replug >= 2, "restarted after replug");
+
+        // Input nodes can appear a moment after the keyboard reconnects; a reader that finds none is retried.
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        assert!(starts.load(Ordering::SeqCst) >= after_replug + 2, "re-checked while connected");
+
+        // Nobody subscribed: no more readers.
+        want_tx.send_replace(false);
+        settle().await;
+        let before = starts.load(Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), before, "no reader without subscribers");
     }
 }

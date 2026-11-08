@@ -10,6 +10,9 @@ use steelseries_gg::rgb::Color;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
+/// How often static lighting is re-sent.
+pub const KEEPALIVE: Duration = Duration::from_secs(2);
+
 /// Channels between the output loop and the D-Bus service.
 pub struct Shared {
     /// Latest wanted state; a watch keeps only the newest value, so bursts coalesce.
@@ -77,7 +80,9 @@ async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut 
         }
         *shared.frame.lock().unwrap() = frame;
 
-        let next = renderer.next_frame_in();
+        // Static lighting is re-sent as a keepalive: it notices an unplug (the write fails) and restores the
+        // colours if the board reset itself.
+        let next = renderer.next_frame_in().or(Some(KEEPALIVE));
         tokio::select! {
             changed = shared.state.changed() => {
                 if changed.is_err() {
@@ -203,7 +208,8 @@ mod tests {
         wait(5.0).await; // backoff 1s + 2s
         assert_eq!(h.opens.load(Ordering::SeqCst), 3);
         assert!(*h.connected.borrow());
-        assert_eq!(h.calls(), vec![Call::Brightness(100), Call::Zones([Color::WHITE; ZONE_COUNT])]);
+        // first brightness, then the colours (later writes are keepalives of the same frame)
+        assert_eq!(h.calls()[..2], [Call::Brightness(100), Call::Zones([Color::WHITE; ZONE_COUNT])]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -262,5 +268,25 @@ mod tests {
         let frames = h.count(|c| matches!(c, Call::Zones(_))) - before;
         // 16 ms cap: frames at 0, 16, ..., 992 ms is at most 63
         assert!((30..=63).contains(&frames), "{frames} frames in 1s");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn static_lighting_is_resent_as_a_keepalive() {
+        let h = start(0, 0);
+        wait(0.1).await;
+        let before = h.count(|c| matches!(c, Call::Zones(_)));
+        wait(5.0).await;
+        let resent = h.count(|c| matches!(c, Call::Zones(_))) - before;
+        assert!((2..=3).contains(&resent), "{resent} keepalive frames in 5 s");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unplug_is_noticed_while_static() {
+        let h = start(0, 3); // the first keepalive write fails, as after an unplug
+        wait(0.1).await;
+        assert!(*h.connected.borrow());
+        wait(2.5).await;
+        assert_eq!(h.opens.load(Ordering::SeqCst), 1, "not reopened yet (1 s pause)");
+        assert!(!*h.connected.borrow(), "unplug noticed by the keepalive");
     }
 }

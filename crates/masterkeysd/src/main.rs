@@ -52,11 +52,11 @@ async fn main() -> ExitCode {
 
     let shared = Shared { state: state_rx, connected: connected_tx, frame };
     tokio::spawn(output::run(apex3_opener(), shared, Backoff::DEFAULT));
-    tokio::spawn(watch_connection(conn.clone(), connected_rx));
     let (key_tx, key_rx) = tokio::sync::mpsc::channel(256);
-    tokio::spawn(run_reader(want_reader, key_tx));
+    tokio::spawn(run_reader(want_reader, connected_rx.clone(), key_tx));
     tokio::spawn(emit_keys(conn.clone(), keys.clone(), key_rx));
     tokio::spawn(drop_vanished(conn.clone(), keys));
+    tokio::spawn(watch_connection(conn.clone(), connected_rx));
 
     let (mut term, mut int) = match (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) {
         (Ok(t), Ok(i)) => (t, i),
