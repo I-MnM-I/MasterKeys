@@ -6,11 +6,13 @@ use masterkeys::client::{self, Command, Event, Status};
 use masterkeys::effects::{EffectKind, build, kind_of, parse_color_input};
 use masterkeys::view::key_colors;
 use masterkeys_core::layout::Layout;
+use masterkeys_core::process;
+use masterkeys_core::profile::ProfileSummary;
 use masterkeys_core::render::Renderer;
 use masterkeys_core::{LightingState, to_hex};
 use slint::{Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -42,12 +44,20 @@ struct App {
     selected_zone: Option<u8>,
     slots: [Color; 2],
     active_slot: usize,
+    profiles: Vec<ProfileSummary>,
+    active_profile: String,
+    selected_profile: Option<String>,
     commands: UnboundedSender<Command>,
 }
 
 impl App {
     fn send(&self, command: Command) {
         let _ = self.commands.send(command);
+    }
+
+    fn selected(&self) -> Option<&ProfileSummary> {
+        let name = self.selected_profile.as_ref()?;
+        self.profiles.iter().find(|p| &p.name == name)
     }
 
     fn effect_from_panel(&self, ui: &MainWindow) -> Option<Effect> {
@@ -79,6 +89,40 @@ fn set_slot(ui: &MainWindow, app: &mut App, slot: usize, color: Color) {
     }
 }
 
+/// Redraw the profile list and the selected profile's linked programs.
+fn show_profiles(ui: &MainWindow, app: &mut App) {
+    if app.selected().is_none() {
+        app.selected_profile = Some(app.active_profile.clone()).filter(|n| app.profiles.iter().any(|p| &p.name == n));
+    }
+    let rows: Vec<SharedString> = app
+        .profiles
+        .iter()
+        .map(|p| {
+            let mark = if p.name == app.active_profile { "● " } else { "   " };
+            let default = if p.is_default { "  (default)" } else { "" };
+            format!("{mark}{}{default}", p.name).into()
+        })
+        .collect();
+    ui.set_profile_rows(ModelRc::new(VecModel::from(rows)));
+    let index = app.selected_profile.as_ref().and_then(|n| app.profiles.iter().position(|p| &p.name == n));
+    ui.set_selected_profile(index.map_or(-1, |i| i as i32));
+    let linked: Vec<SharedString> =
+        app.selected().map(|p| p.executables.iter().map(|e| e.as_str().into()).collect()).unwrap_or_default();
+    ui.set_linked_programs(ModelRc::new(VecModel::from(linked)));
+}
+
+/// Add a program to the selected profile's links.
+fn link_program(app: &App, exe: &str) {
+    let exe = exe.trim();
+    let Some(profile) = app.selected() else { return };
+    if exe.is_empty() || profile.executables.iter().any(|e| e == exe) {
+        return;
+    }
+    let mut exes = profile.executables.clone();
+    exes.push(exe.to_string());
+    app.send(Command::SetExecutables(profile.name.clone(), exes));
+}
+
 fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
     match event {
         Event::Status(status) => {
@@ -86,7 +130,15 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
             ui.set_connected(status == Status::Connected);
             ui.set_daemon_running(status != Status::DaemonNotRunning);
         }
-        Event::State(state) => {
+        Event::Profiles(list) => {
+            app.profiles = list;
+            show_profiles(ui, app);
+        }
+        Event::State(state, profile) => {
+            if profile != app.active_profile {
+                app.active_profile = profile;
+                show_profiles(ui, app);
+            }
             app.renderer.set_state(&state);
             ui.set_brightness(f32::from(state.brightness));
             let index = kind_of(&state.effect).map_or(EffectKind::ALL.len(), |k| {
@@ -160,6 +212,9 @@ fn main() -> Result<(), slint::PlatformError> {
         selected_zone: None,
         slots: [Color::WHITE, Color::BLUE],
         active_slot: 0,
+        profiles: Vec::new(),
+        active_profile: String::new(),
+        selected_profile: None,
         commands,
     }));
     {
@@ -260,6 +315,95 @@ fn main() -> Result<(), slint::PlatformError> {
         if let Some(effect) = app.effect_from_panel(&ui).filter(|e| kind_of(e).is_some_and(EffectKind::has_speed)) {
             app.send(Command::SetEffect(effect));
         }
+    });
+
+    let weak = ui.as_weak();
+    let a = app.clone();
+    ui.on_profile_clicked(move |i| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut app = a.borrow_mut();
+        let Some(name) = usize::try_from(i).ok().and_then(|i| app.profiles.get(i)).map(|p| p.name.clone()) else {
+            return;
+        };
+        app.selected_profile = Some(name.clone());
+        ui.set_profile_name(name.as_str().into());
+        ui.set_show_running(false);
+        show_profiles(&ui, &mut app);
+        app.send(Command::ActivateProfile(name));
+    });
+
+    let a = app.clone();
+    ui.on_profile_new(move |name| a.borrow().send(Command::CreateProfile(name.trim().to_string())));
+
+    let a = app.clone();
+    ui.on_profile_rename(move |new| {
+        let mut app = a.borrow_mut();
+        let Some(old) = app.selected().map(|p| p.name.clone()) else { return };
+        let new = new.trim().to_string();
+        app.selected_profile = Some(new.clone());
+        app.send(Command::RenameProfile(old, new));
+    });
+
+    let a = app.clone();
+    ui.on_profile_delete(move || {
+        let app = a.borrow();
+        if let Some(p) = app.selected() {
+            app.send(Command::DeleteProfile(p.name.clone()));
+        }
+    });
+
+    let a = app.clone();
+    ui.on_profile_make_default(move || {
+        let app = a.borrow();
+        if let Some(p) = app.selected() {
+            app.send(Command::SetDefault(p.name.clone()));
+        }
+    });
+
+    let a = app.clone();
+    ui.on_unlink_program(move |i| {
+        let app = a.borrow();
+        let (Some(p), Ok(i)) = (app.selected(), usize::try_from(i)) else { return };
+        let mut exes = p.executables.clone();
+        if i < exes.len() {
+            exes.remove(i);
+            app.send(Command::SetExecutables(p.name.clone(), exes));
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_link_running_requested(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let names: BTreeSet<String> = process::running().iter().filter_map(process::display_name).collect();
+        let names: Vec<SharedString> = names.into_iter().map(SharedString::from).collect();
+        ui.set_running_programs(ModelRc::new(VecModel::from(names)));
+        ui.set_show_running(true);
+    });
+
+    let a = app.clone();
+    ui.on_link_program(move |exe| link_program(&a.borrow(), &exe));
+
+    let weak = ui.as_weak();
+    ui.on_browse_program(move || {
+        let weak = weak.clone();
+        // kdialog blocks until the user picks, so run it off the UI thread.
+        std::thread::spawn(move || {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+            let result = std::process::Command::new("kdialog").args(["--getopenfilename", &home]).output();
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                match result {
+                    Ok(out) if out.status.success() => {
+                        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if let Some(name) = std::path::Path::new(&path).file_name() {
+                            ui.invoke_link_program(name.to_string_lossy().as_ref().into());
+                        }
+                    }
+                    Ok(_) => {} // cancelled
+                    Err(e) => ui.set_error_text(format!("cannot open a file picker (kdialog): {e}").into()),
+                }
+            });
+        });
     });
 
     let a = app.clone();

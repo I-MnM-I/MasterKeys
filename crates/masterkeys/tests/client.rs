@@ -78,14 +78,14 @@ impl Harness {
 async fn initial_state_and_status() {
     let mut h = start().await;
     assert!(matches!(h.next().await, Event::Status(Status::KeyboardNotFound)));
-    assert!(matches!(h.next().await, Event::State(s) if s == LightingState::default()));
+    assert!(matches!(h.next().await, Event::State(s, _) if s == LightingState::default()));
 }
 
 #[tokio::test]
 async fn commands_reach_the_daemon() {
     let mut h = start().await;
     h.commands.send(Command::SetAll(Color::RED)).unwrap();
-    h.until(|e| matches!(e, Event::State(s) if s.effect == Effect::Static { color: Color::RED })).await;
+    h.until(|e| matches!(e, Event::State(s, _) if s.effect == Effect::Static { color: Color::RED })).await;
     assert_eq!(h.state.borrow().effect, Effect::Static { color: Color::RED });
 }
 
@@ -121,4 +121,21 @@ async fn daemon_disappearing_reports_not_running_and_releases_keys() {
     h.server.clone().close().await.unwrap();
     h.until(|e| matches!(e, Event::Status(Status::DaemonNotRunning))).await;
     assert!(matches!(h.next().await, Event::Key(30, false)));
+}
+
+#[tokio::test]
+async fn profiles_listed_on_connect() {
+    let mut h = start().await;
+    h.until(|e| matches!(e, Event::Profiles(list) if list.len() == 1 && list[0].name == "Default" && list[0].is_default))
+        .await;
+}
+
+#[tokio::test]
+async fn create_and_activate_profile() {
+    let mut h = start().await;
+    h.until(|e| matches!(e, Event::Profiles(_))).await;
+    h.commands.send(Command::CreateProfile("A".into())).unwrap();
+    h.until(|e| matches!(e, Event::Profiles(list) if list.iter().any(|p| p.name == "A"))).await;
+    h.commands.send(Command::ActivateProfile("A".into())).unwrap();
+    h.until(|e| matches!(e, Event::State(_, name) if name == "A")).await;
 }

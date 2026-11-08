@@ -2,6 +2,7 @@
 
 use futures_util::StreamExt;
 use masterkeys_core::dbus::{BUS_NAME, DaemonProxy};
+use masterkeys_core::profile::ProfileSummary;
 use masterkeys_core::{LightingState, StateReport, to_hex};
 use std::collections::HashSet;
 use std::time::Duration;
@@ -15,6 +16,12 @@ pub enum Command {
     SetZone(u8, Color),
     SetBrightness(u8),
     SetEffect(Effect),
+    ActivateProfile(String),
+    CreateProfile(String),
+    DeleteProfile(String),
+    RenameProfile(String, String),
+    SetExecutables(String, Vec<String>),
+    SetDefault(String),
     StartDaemon,
 }
 
@@ -39,7 +46,9 @@ impl Status {
 #[derive(Clone, Debug)]
 pub enum Event {
     Status(Status),
-    State(LightingState),
+    /// The lighting and the active profile's name.
+    State(LightingState, String),
+    Profiles(Vec<ProfileSummary>),
     Key(u16, bool),
     Error(String),
 }
@@ -128,6 +137,7 @@ async fn session(
     let mut states = proxy.receive_state_changed().await?;
     let mut devices = proxy.receive_device_connected().await?;
     let mut keys = proxy.receive_key_event().await?;
+    let mut profile_changes = proxy.receive_profiles_changed().await?;
     // On the session bus, notice the daemon leaving; peer-to-peer connections have no bus driver.
     let mut owner_changes = match conn.unique_name() {
         Some(_) => Some(zbus::fdo::DBusProxy::new(conn).await?.receive_name_owner_changed().await?),
@@ -141,9 +151,10 @@ async fn session(
             *status = Some(now);
             on_event(Event::Status(now));
         }
-        on_event(Event::State(r.state));
+        on_event(Event::State(r.state, r.profile));
     };
     report(serde_json::from_str(&proxy.get_state().await?).map_err(json_error)?, &mut status);
+    list_profiles(&proxy, on_event).await?;
     proxy.subscribe_keys().await?;
 
     loop {
@@ -152,6 +163,10 @@ async fn session(
                 let Some(signal) = signal else { return Ok(()) };
                 let json = signal.args()?.state_json;
                 report(serde_json::from_str(&json).map_err(json_error)?, &mut status);
+            }
+            signal = profile_changes.next() => {
+                if signal.is_none() { return Ok(()) }
+                list_profiles(&proxy, on_event).await?;
             }
             signal = devices.next() => {
                 let Some(signal) = signal else { return Ok(()) };
@@ -198,12 +213,27 @@ async fn next_owner_change(
     }
 }
 
+async fn list_profiles(proxy: &DaemonProxy<'_>, on_event: &(impl Fn(Event) + ?Sized)) -> zbus::Result<()> {
+    let list = serde_json::from_str(&proxy.list_profiles().await?).map_err(json_error)?;
+    on_event(Event::Profiles(list));
+    Ok(())
+}
+
 async fn send(proxy: &DaemonProxy<'_>, command: Command) -> zbus::Result<()> {
     match command {
         Command::SetAll(color) => proxy.set_all_color(&to_hex(color)).await,
         Command::SetZone(zone, color) => proxy.set_zone_color(zone, &to_hex(color)).await,
         Command::SetBrightness(percent) => proxy.set_brightness(percent).await,
         Command::SetEffect(effect) => proxy.set_effect(&serde_json::to_string(&effect).map_err(json_error)?).await,
+        Command::ActivateProfile(name) => proxy.activate_profile(&name).await,
+        Command::CreateProfile(name) => proxy.create_profile(&name).await,
+        Command::DeleteProfile(name) => proxy.delete_profile(&name).await,
+        Command::RenameProfile(old, new) => proxy.rename_profile(&old, &new).await,
+        Command::SetExecutables(name, exes) => {
+            let exes: Vec<&str> = exes.iter().map(String::as_str).collect();
+            proxy.set_profile_executables(&name, &exes).await
+        }
+        Command::SetDefault(name) => proxy.set_default_profile(&name).await,
         Command::StartDaemon => Ok(()),
     }
 }

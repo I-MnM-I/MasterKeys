@@ -61,7 +61,7 @@ component ColorSlot inherits HorizontalLayout {
 
 export component MainWindow inherits Window {
     title: "MasterKeys";
-    preferred-width: 1000px;
+    preferred-width: 1280px;
     min-width: 760px;
     background: #1c1c1f;
 
@@ -89,6 +89,13 @@ export component MainWindow inherits Window {
     in-out property <float> speed: 0.5;
     in property <bool> show-speed: false;
 
+    in property <[string]> profile-rows;
+    in property <int> selected-profile: -1;
+    in-out property <string> profile-name: "";
+    in property <[string]> linked-programs;
+    in property <[string]> running-programs;
+    in-out property <bool> show-running: false;
+
     callback key-clicked(int);
     callback slot-selected(int);
     callback hex-edited(int, string);
@@ -99,6 +106,15 @@ export component MainWindow inherits Window {
     callback effect-selected(int);
     callback speed-released(float);
     callback start-daemon();
+    callback profile-clicked(int);
+    callback profile-new(string);
+    callback profile-rename(string);
+    callback profile-delete();
+    callback profile-make-default();
+    callback unlink-program(int);
+    callback link-running-requested();
+    callback link-program(string);
+    callback browse-program();
 
     VerticalBox {
         padding: 12px;
@@ -241,6 +257,120 @@ export component MainWindow inherits Window {
                             value <=> root.speed;
                             released(v) => {
                                 root.speed-released(v);
+                            }
+                        }
+                    }
+                }
+            }
+            GroupBox {
+                title: "Profiles";
+                VerticalBox {
+                    for row[i] in root.profile-rows: Rectangle {
+                        height: 24px;
+                        border-radius: 3px;
+                        background: i == root.selected-profile ? #ffffff24 : transparent;
+                        Text {
+                            x: 6px;
+                            text: row;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.profile-clicked(i);
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        LineEdit {
+                            text <=> root.profile-name;
+                            placeholder-text: "Profile name";
+                            enabled: root.daemon-running;
+                        }
+                        Button {
+                            text: "New";
+                            enabled: root.daemon-running && root.profile-name != "";
+                            clicked => {
+                                root.profile-new(root.profile-name);
+                            }
+                        }
+                        Button {
+                            text: "Rename";
+                            enabled: root.daemon-running && root.selected-profile >= 0 && root.profile-name != "";
+                            clicked => {
+                                root.profile-rename(root.profile-name);
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        Button {
+                            text: "Delete";
+                            enabled: root.daemon-running && root.selected-profile >= 0;
+                            clicked => {
+                                root.profile-delete();
+                            }
+                        }
+                        Button {
+                            text: "Make default";
+                            enabled: root.daemon-running && root.selected-profile >= 0;
+                            clicked => {
+                                root.profile-make-default();
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Linked programs";
+                    }
+                    for exe[i] in root.linked-programs: HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: exe;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Button {
+                            text: "✕";
+                            clicked => {
+                                root.unlink-program(i);
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        Button {
+                            text: "Link a running program…";
+                            enabled: root.daemon-running && root.selected-profile >= 0;
+                            clicked => {
+                                root.link-running-requested();
+                            }
+                        }
+                        Button {
+                            text: "Browse…";
+                            enabled: root.daemon-running && root.selected-profile >= 0;
+                            clicked => {
+                                root.browse-program();
+                            }
+                        }
+                    }
+                    if root.show-running: HorizontalLayout {
+                        spacing: 6px;
+                        running := ComboBox {
+                            model: root.running-programs;
+                        }
+                        Button {
+                            text: "Link";
+                            clicked => {
+                                root.link-program(running.current-value);
+                                root.show-running = false;
+                            }
+                        }
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                root.show-running = false;
                             }
                         }
                     }
