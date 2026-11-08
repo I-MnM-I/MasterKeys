@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+
+[profile.release]
+strip = true           # Remove debug symbols
+lto = "fat"            # Full link-time optimization across all crates
+codegen-units = 1      # Single codegen unit for better optimization
+panic = "abort"        # Don't generate unwinding code
+opt-level = 3          # Maximum optimization
+debug = 0              # No debug info
+overflow-checks = false # Disable integer overflow checks in release
+
+[profile.dev]
+debug = 0
+split-debuginfo = "packed"
+opt-level = 0
+codegen-units = 256
+incremental = true
+
+[profile.release.build-override]
+inherits = "release"
+opt-level = 0
+codegen-units = 256
+incremental = true
+debug = 0
+
