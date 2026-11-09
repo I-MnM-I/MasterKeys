@@ -33,6 +33,17 @@ pub fn menu_items(m: &TrayModel) -> Vec<TrayItem> {
     items
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseAction {
+    HideToTray,
+    Quit,
+}
+
+/// Closing the window hides it only when the tray can bring it back; otherwise the GUI quits.
+pub fn on_close(tray_ok: bool) -> CloseAction {
+    if tray_ok { CloseAction::HideToTray } else { CloseAction::Quit }
+}
+
 type Action = Arc<dyn Fn() + Send + Sync>;
 
 pub struct Tray {
@@ -142,6 +153,12 @@ mod tests {
                 TrayItem::Quit,
             ]
         );
+    }
+
+    #[test]
+    fn closing_hides_only_when_there_is_a_tray() {
+        assert_eq!(on_close(true), CloseAction::HideToTray);
+        assert_eq!(on_close(false), CloseAction::Quit);
     }
 
     #[test]

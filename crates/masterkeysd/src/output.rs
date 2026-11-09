@@ -72,6 +72,8 @@ async fn connect(opener: &mut Opener, backoff: Backoff) -> Box<dyn Lighting> {
 async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut Shared) -> steelseries_gg::Error {
     let mut state = shared.state.borrow_and_update().clone();
     renderer.set_state(&state);
+    // False once GameSense went away; then the overlay is never waited on again.
+    let mut overlay_alive = true;
     if let Err(e) = device.set_brightness(state.brightness) {
         return e;
     }
@@ -104,11 +106,12 @@ async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut 
                 }
                 state = new;
             }
-            changed = shared.overlay.changed() => {
+            changed = async {
+                if overlay_alive { shared.overlay.changed().await } else { std::future::pending().await }
+            } => {
                 if changed.is_err() {
                     // GameSense is gone: keep following the profile, never wake for the overlay again.
-                    let (_tx, rx) = watch::channel([None; ZONE_COUNT]);
-                    shared.overlay = rx;
+                    overlay_alive = false;
                 }
             }
             _ = sleep_for(next) => {}
@@ -222,6 +225,18 @@ mod tests {
         h.overlay.send_replace([None; ZONE_COUNT]);
         wait(0.1).await;
         assert_eq!(h.calls().last(), Some(&Call::Zones([Color::WHITE; ZONE_COUNT])));
+    }
+
+    #[tokio::test]
+    async fn losing_gamesense_does_not_spin() {
+        let h = start(0, 0);
+        wait(0.1).await;
+        let Harness { calls, overlay, .. } = h;
+        drop(overlay);
+        let before = calls.lock().unwrap().len();
+        wait(0.5).await;
+        let after = calls.lock().unwrap().len();
+        assert!(after - before <= 2, "{} writes in 0.5 s after the overlay sender went away", after - before);
     }
 
     async fn wait(secs: f32) {

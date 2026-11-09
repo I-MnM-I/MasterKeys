@@ -556,6 +556,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_handlers_beside_known_ones_are_skipped() {
+        let (port, mut rx, task) = served().await;
+        let bind = r#"{"game":"G","event":"HP","handlers":[{"device-type":"rgb-2-zone","zone":"one","color":{"red":1,"green":2,"blue":3}},{"device-type":"keyboard","zone":"all","color":{"red":0,"green":255,"blue":0}}]}"#;
+        assert_eq!(post(port, "/bind_game_event", bind).await, 200);
+        assert_eq!(post(port, "/game_event", r#"{"game":"G","event":"HP","data":{"value":1}}"#).await, 200);
+        rx.recv().await; // heartbeat
+        assert_eq!(
+            rx.recv().await,
+            Some(GameSenseOutput::Color { game: "G".into(), zone: "all".into(), color: crate::rgb::Color::GREEN })
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn unknown_device_type_is_refused_and_server_keeps_working() {
         let (port, mut rx, task) = served().await;
         let bad = r#"{"game":"G","event":"X","handlers":[{"device-type":"toaster","zone":"one"}]}"#;

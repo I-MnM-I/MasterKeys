@@ -5,7 +5,7 @@ slint::include_modules!();
 use masterkeys::client::{self, Command, Event, Status};
 use masterkeys::effects::{EffectKind, build, kind_of, parse_color_input};
 use masterkeys::instance::claim_or_raise;
-use masterkeys::tray::{TrayModel, spawn_tray};
+use masterkeys::tray::{CloseAction, TrayModel, on_close, spawn_tray};
 use masterkeys::view::{binding_text, key_colors, key_name, marked, reselect};
 use masterkeys_core::InputStatus;
 use masterkeys_core::bindings::Macro;
@@ -531,12 +531,6 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     ui.on_start_daemon(move || a.borrow().send(Command::StartDaemon));
 
-    // Closing the window hides it; the tray (or a second launch) brings it back.
-    let close_commands = commands.clone();
-    ui.window().on_close_requested(move || {
-        let _ = close_commands.send(Command::KeysWanted(false));
-        slint::CloseRequestResponse::HideWindow
-    });
     let raise = {
         let weak = ui.as_weak();
         let commands = commands.clone();
@@ -556,6 +550,18 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
     let tray_ok = tray.is_some();
+    // Closing the window hides it when the tray (or a second launch) can bring it back; else quit.
+    let close_commands = commands.clone();
+    ui.window().on_close_requested(move || match on_close(tray_ok) {
+        CloseAction::HideToTray => {
+            let _ = close_commands.send(Command::KeysWanted(false));
+            slint::CloseRequestResponse::HideWindow
+        }
+        CloseAction::Quit => {
+            let _ = slint::quit_event_loop();
+            slint::CloseRequestResponse::HideWindow
+        }
+    });
 
     let weak = ui.as_weak();
     let timer = slint::Timer::default();

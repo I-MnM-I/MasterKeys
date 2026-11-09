@@ -82,11 +82,27 @@ pub struct EventBinding {
     pub icon_id: Option<u8>,
 
     /// Handlers for this event.
+    #[serde(deserialize_with = "known_handlers")]
     pub handlers: Vec<Handler>,
 }
 
 fn default_max_value() -> i32 {
     100
+}
+
+/// Keep the handlers this server understands and skip the rest (games bind mouse and headset
+/// handlers in the same call as the keyboard's); refuse the binding only if none is usable.
+fn known_handlers<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<Handler>, D::Error> {
+    let raw: Vec<serde_json::Value> = Deserialize::deserialize(d)?;
+    let total = raw.len();
+    let known: Vec<Handler> = raw.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
+    if known.is_empty() && total > 0 {
+        return Err(serde::de::Error::custom("no supported handler in binding"));
+    }
+    if known.len() < total {
+        tracing::debug!("skipped {} unsupported GameSense handler(s)", total - known.len());
+    }
+    Ok(known)
 }
 
 /// Event handler definition.
