@@ -3,3 +3,5 @@
 pub mod client;
 pub mod effects;
 pub mod view;
+pub mod tray;
+pub mod instance;

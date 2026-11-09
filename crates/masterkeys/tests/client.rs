@@ -58,7 +58,7 @@ async fn start() -> Harness {
     let (event_tx, events) = mpsc::unbounded_channel();
     let (commands, mut command_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
-        run_on(client, &move |e| { let _ = event_tx.send(e); }, &mut command_rx).await;
+        run_on(client, &move |e| { let _ = event_tx.send(e); }, &mut command_rx, &mut true).await;
     });
     Harness { events, commands, state: state_rx, connected: connected_tx, keys: keys_tx, server, _config: config }
 }
@@ -166,4 +166,28 @@ async fn recording_puts_a_macro_on_the_key() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     h.commands.send(Command::StopRecording("f1".into())).unwrap();
     h.until(|e| matches!(e, Event::State(r) if r.macros.contains_key("f1"))).await;
+}
+
+#[tokio::test]
+async fn keys_wanted_false_stops_key_events() {
+    let mut h = start().await;
+    h.until(|e| matches!(e, Event::Profiles(_))).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.commands.send(Command::KeysWanted(false)).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.keys.send((30, true)).await.unwrap();
+    let got = tokio::time::timeout(Duration::from_millis(300), h.until(|e| matches!(e, Event::Key(30, true)))).await;
+    assert!(got.is_err(), "no key events while not wanted");
+    h.commands.send(Command::KeysWanted(true)).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.keys.send((31, true)).await.unwrap();
+    h.until(|e| matches!(e, Event::Key(31, true))).await;
+}
+
+#[tokio::test]
+async fn gamesense_toggle_reaches_daemon() {
+    let mut h = start().await;
+    h.until(|e| matches!(e, Event::Profiles(_))).await;
+    h.commands.send(Command::SetGameSense(false)).unwrap();
+    h.until(|e| matches!(e, Event::State(r) if !r.gamesense.enabled)).await;
 }

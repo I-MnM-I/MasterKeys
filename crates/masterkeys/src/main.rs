@@ -4,6 +4,8 @@ slint::include_modules!();
 
 use masterkeys::client::{self, Command, Event, Status};
 use masterkeys::effects::{EffectKind, build, kind_of, parse_color_input};
+use masterkeys::instance::claim_or_raise;
+use masterkeys::tray::{TrayModel, spawn_tray};
 use masterkeys::view::{binding_text, key_colors, key_name, marked, reselect};
 use masterkeys_core::InputStatus;
 use masterkeys_core::bindings::Macro;
@@ -58,6 +60,8 @@ struct App {
     selected_key: Option<usize>,
     select_by_press: bool,
     recording: bool,
+    /// The daemon is reachable (for the tray).
+    daemon_up: bool,
     commands: UnboundedSender<Command>,
 }
 
@@ -165,6 +169,7 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
             ui.set_status_text(status.text().into());
             ui.set_connected(status == Status::Connected);
             ui.set_daemon_running(status != Status::DaemonNotRunning);
+            app.daemon_up = status != Status::DaemonNotRunning;
         }
         Event::Profiles(list) => {
             app.profiles = list;
@@ -172,7 +177,9 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
             app.pending_rename = None;
         }
         Event::State(report) => {
-            let StateReport { state, profile, remaps, macros, input, .. } = *report;
+            let StateReport { state, profile, remaps, macros, input, gamesense, .. } = *report;
+            ui.set_gamesense_enabled(gamesense.enabled);
+            ui.set_gamesense_text(gamesense.game.map(|g| format!("GameSense: {g}")).unwrap_or_default().into());
             app.remaps = remaps;
             app.macros = macros;
             show_key_panel(ui, app);
@@ -241,7 +248,17 @@ fn refresh_keys(app: &mut App, model: &VecModel<KeyView>) {
     }
 }
 
+/// Show the window and start following key presses again.
+fn show_window(ui: &MainWindow, commands: &UnboundedSender<Command>) {
+    let _ = ui.show();
+    let _ = commands.send(Command::KeysWanted(true));
+}
+
 fn main() -> Result<(), slint::PlatformError> {
+    let start_hidden = std::env::args().skip(1).any(|a| a == "--tray");
+    let Some(instance) = claim_or_raise() else {
+        return Ok(()); // the running GUI was asked to show its window
+    };
     let ui = MainWindow::new()?;
     let (event_tx, event_rx) = mpsc::channel();
     let commands = client::spawn(move |event| {
@@ -278,7 +295,8 @@ fn main() -> Result<(), slint::PlatformError> {
         selected_key: None,
         select_by_press: false,
         recording: false,
-        commands,
+        daemon_up: false,
+        commands: commands.clone(),
     }));
     {
         let mut a = app.borrow_mut();
@@ -508,7 +526,36 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let a = app.clone();
+    ui.on_gamesense_toggled(move |on| a.borrow().send(Command::SetGameSense(on)));
+
+    let a = app.clone();
     ui.on_start_daemon(move || a.borrow().send(Command::StartDaemon));
+
+    // Closing the window hides it; the tray (or a second launch) brings it back.
+    let close_commands = commands.clone();
+    ui.window().on_close_requested(move || {
+        let _ = close_commands.send(Command::KeysWanted(false));
+        slint::CloseRequestResponse::HideWindow
+    });
+    let raise = {
+        let weak = ui.as_weak();
+        let commands = commands.clone();
+        move || {
+            let (weak, commands) = (weak.clone(), commands.clone());
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    show_window(&ui, &commands);
+                }
+            });
+        }
+    };
+    instance.on_show(raise.clone());
+    let mut tray = spawn_tray(commands.clone(), raise, || {
+        let _ = slint::invoke_from_event_loop(|| {
+            let _ = slint::quit_event_loop();
+        });
+    });
+    let tray_ok = tray.is_some();
 
     let weak = ui.as_weak();
     let timer = slint::Timer::default();
@@ -519,7 +566,20 @@ fn main() -> Result<(), slint::PlatformError> {
             apply_event(&ui, &mut app, event);
         }
         refresh_keys(&mut app, &model);
+        if let Some(tray) = &mut tray {
+            tray.update(TrayModel {
+                profile: app.active_profile.clone(),
+                profiles: app.profiles.iter().map(|p| p.name.clone()).collect(),
+                connected: app.daemon_up,
+            });
+        }
     });
 
-    ui.run()
+    // Without a tray there would be no way back to a hidden window, so `--tray` then shows it anyway.
+    if start_hidden && tray_ok {
+        let _ = commands.send(Command::KeysWanted(false));
+    } else {
+        show_window(&ui, &commands);
+    }
+    slint::run_event_loop_until_quit()
 }

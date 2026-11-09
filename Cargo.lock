@@ -2801,6 +2801,7 @@ name = "masterkeys"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "ksni",
  "masterkeys-core",
  "masterkeysd",
  "serde_json",

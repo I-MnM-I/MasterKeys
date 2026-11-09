@@ -1,4 +1,4 @@
-import { Button, Slider, ComboBox, LineEdit, HorizontalBox, VerticalBox, GroupBox } from "std-widgets.slint";
+import { Button, CheckBox, Slider, ComboBox, LineEdit, HorizontalBox, VerticalBox, GroupBox } from "std-widgets.slint";
 import { Keyboard, KeyView } from "keyboard.slint";
 
 export { KeyView }
@@ -104,6 +104,8 @@ export component MainWindow inherits Window {
     in property <bool> select-by-press: false;
     in property <string> input-message: "";
     in property <bool> show-udev-command: false;
+    in property <bool> gamesense-enabled: true;
+    in property <string> gamesense-text: "";
 
     callback key-clicked(int);
     callback slot-selected(int);
@@ -128,6 +130,7 @@ export component MainWindow inherits Window {
     callback record-clicked();
     callback reset-key();
     callback select-by-press-clicked();
+    callback gamesense-toggled(bool);
 
     VerticalBox {
         padding: 12px;
@@ -307,6 +310,14 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+                    CheckBox {
+                        text: "GameSense lighting";
+                        checked: root.gamesense-enabled;
+                        enabled: root.daemon-running;
+                        toggled => {
+                            root.gamesense-toggled(self.checked);
+                        }
+                    }
                     if root.show-speed: HorizontalLayout {
                         spacing: 8px;
                         Text {
@@ -461,6 +472,11 @@ export component MainWindow inherits Window {
                 clicked => {
                     root.start-daemon();
                 }
+            }
+            if root.gamesense-text != "": Text {
+                text: root.gamesense-text;
+                color: #4fc3f7;
+                vertical-alignment: center;
             }
             if root.input-message != "": Text {
                 text: root.input-message;

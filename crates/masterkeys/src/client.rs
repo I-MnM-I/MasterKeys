@@ -30,6 +30,9 @@ pub enum Command {
     StartRecording,
     /// Stop recording and put the macro on this key.
     StopRecording(String),
+    /// Whether the GUI wants key events (only while its window is open).
+    KeysWanted(bool),
+    SetGameSense(bool),
     StartDaemon,
 }
 
@@ -67,12 +70,13 @@ pub fn spawn(on_event: impl Fn(Event) + Send + Sync + 'static) -> mpsc::Unbounde
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
         runtime.block_on(async move {
+            let mut keys_wanted = true;
             loop {
                 match zbus::Connection::session().await {
-                    Ok(conn) if daemon_present(&conn).await => run_on(conn, &on_event, &mut rx).await,
+                    Ok(conn) if daemon_present(&conn).await => run_on(conn, &on_event, &mut rx, &mut keys_wanted).await,
                     _ => on_event(Event::Status(Status::DaemonNotRunning)),
                 }
-                wait_offline(&on_event, &mut rx, Duration::from_secs(1)).await;
+                wait_offline(&on_event, &mut rx, &mut keys_wanted, Duration::from_secs(1)).await;
             }
         });
     });
@@ -90,6 +94,7 @@ async fn daemon_present(conn: &zbus::Connection) -> bool {
 async fn wait_offline(
     on_event: &(impl Fn(Event) + ?Sized),
     commands: &mut mpsc::UnboundedReceiver<Command>,
+    keys_wanted: &mut bool,
     delay: Duration,
 ) {
     let deadline = tokio::time::sleep(delay);
@@ -99,6 +104,7 @@ async fn wait_offline(
             _ = &mut deadline => return,
             command = commands.recv() => match command {
                 Some(Command::StartDaemon) => start_daemon(on_event).await,
+                Some(Command::KeysWanted(wanted)) => *keys_wanted = wanted,
                 Some(_) => on_event(Event::Error("the daemon is not running".into())),
                 None => std::future::pending::<()>().await,
             },
@@ -115,14 +121,16 @@ async fn start_daemon(on_event: &(impl Fn(Event) + ?Sized)) {
     }
 }
 
-/// One session with the daemon on `conn`; returns when the daemon goes away.
+/// One session with the daemon on `conn`; returns when the daemon goes away. `keys_wanted` says
+/// whether to subscribe to key events, and follows `KeysWanted` commands across sessions.
 pub async fn run_on(
     conn: zbus::Connection,
     on_event: &(impl Fn(Event) + ?Sized),
     commands: &mut mpsc::UnboundedReceiver<Command>,
+    keys_wanted: &mut bool,
 ) {
     let mut held = HashSet::new();
-    if let Err(e) = session(&conn, on_event, commands, &mut held).await {
+    if let Err(e) = session(&conn, on_event, commands, &mut held, keys_wanted).await {
         log_session_end(&e);
     }
     on_event(Event::Status(Status::DaemonNotRunning));
@@ -140,6 +148,7 @@ async fn session(
     on_event: &(impl Fn(Event) + ?Sized),
     commands: &mut mpsc::UnboundedReceiver<Command>,
     held: &mut HashSet<u16>,
+    keys_wanted: &mut bool,
 ) -> zbus::Result<()> {
     let proxy = DaemonProxy::new(conn).await?;
     let mut states = proxy.receive_state_changed().await?;
@@ -163,7 +172,9 @@ async fn session(
     };
     report(serde_json::from_str(&proxy.get_state().await?).map_err(json_error)?, &mut status);
     list_profiles(&proxy, on_event).await?;
-    proxy.subscribe_keys().await?;
+    if *keys_wanted {
+        proxy.subscribe_keys().await?;
+    }
 
     loop {
         tokio::select! {
@@ -204,6 +215,13 @@ async fn session(
             }
             command = commands.recv() => {
                 let Some(command) = command else { return Ok(()) };
+                if let Command::KeysWanted(wanted) = command {
+                    if wanted != *keys_wanted {
+                        *keys_wanted = wanted;
+                        if wanted { proxy.subscribe_keys().await? } else { proxy.unsubscribe_keys().await? }
+                    }
+                    continue;
+                }
                 if let Err(e) = send(&proxy, command).await {
                     on_event(Event::Error(e.to_string()));
                 }
@@ -251,7 +269,8 @@ async fn send(proxy: &DaemonProxy<'_>, command: Command) -> zbus::Result<()> {
             let json = proxy.stop_macro_recording().await?;
             proxy.set_macro(&key, &json).await
         }
-        Command::StartDaemon => Ok(()),
+        Command::SetGameSense(enabled) => proxy.set_game_sense_enabled(enabled).await,
+        Command::StartDaemon | Command::KeysWanted(_) => Ok(()),
     }
 }
 
