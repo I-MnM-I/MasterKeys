@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn remap_and_macro_replace_each_other() {
         use masterkeys_core::bindings::{Macro, MacroStep};
-        let tap = Macro { steps: vec![MacroStep::Down("a".into()), MacroStep::Up("a".into())] };
+        let tap = Macro { steps: vec![MacroStep::Down("a".into()), MacroStep::Up("a".into())], ..Macro::default() };
         let mut p = three();
         p.take_pending();
         p.set_remap("Caps_Lock", "Escape").unwrap();
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn chord_keys_cannot_hold_macros() {
         use masterkeys_core::bindings::{Macro, MacroStep};
-        let tap = Macro { steps: vec![MacroStep::Down("a".into()), MacroStep::Up("a".into())] };
+        let tap = Macro { steps: vec![MacroStep::Down("a".into()), MacroStep::Up("a".into())], ..Macro::default() };
         let mut p = three();
         for key in ["left_ctrl", "right_ctrl", "left_shift", "right_shift"] {
             assert!(matches!(p.set_macro(key, tap.clone()), Err(ProfileError::Invalid(_))), "{key}");
@@ -435,7 +435,7 @@ mod tests {
         assert!(matches!(p.set_remap("a", "a"), Err(ProfileError::Invalid(_))));
         assert!(matches!(p.set_remap("nope", "b"), Err(ProfileError::Invalid(_))));
         assert!(matches!(p.set_remap("a", "nope"), Err(ProfileError::Invalid(_))));
-        let bad = Macro { steps: vec![MacroStep::Down("a".into())] };
+        let bad = Macro { steps: vec![MacroStep::Down("a".into())], ..Macro::default() };
         assert!(matches!(p.set_macro("f1", bad), Err(ProfileError::Invalid(_))));
     }
 

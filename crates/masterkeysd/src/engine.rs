@@ -1,24 +1,46 @@
 //! The input engine: remaps (the fork's `Remapper`) plus macro playback, and the macro recorder.
 //! Pure state machines; `input` feeds them events and times.
 
-use masterkeys_core::bindings::{Compiled, MAX_DELAY_MS, MAX_MACRO_STEPS, Macro, MacroStep, ResolvedStep};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
+use masterkeys_core::bindings::{
+    Compiled, CompiledMacro, MAX_DELAY_MS, MAX_MACRO_STEPS, Macro, MacroMode, MacroStep, ResolvedStep,
+};
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 use steelseries_gg::input::{InputKey, KeyEvent, KeyValue, Remapper, RemapperConfig};
+
+/// The shortest time from one start of a repeating macro to the next, so an instant macro with no
+/// gap can't flood the virtual keyboard.
+pub const MIN_LOOP_PERIOD: Duration = Duration::from_millis(10);
+/// A repeat that fell further behind than this (a stalled task) starts now instead of catching up.
+const MAX_LAG: Duration = Duration::from_millis(100);
 
 /// A macro step due at a time, and the macro key that queued it.
 struct Queued {
     due: Instant,
+    /// Tie-break, so steps due together keep their order.
+    seq: u64,
     event: KeyEvent,
     source: InputKey,
+    /// The last step of one run of the macro.
+    end_of_run: bool,
+}
+
+/// A macro that is playing.
+struct Playing {
+    mac: CompiledMacro,
+    /// Runs still to go after the current one; `None` repeats until stopped.
+    runs_left: Option<u32>,
+    run_start: Instant,
 }
 
 pub struct Engine {
     remapper: Remapper,
-    macros: HashMap<InputKey, Vec<ResolvedStep>>,
-    queue: VecDeque<Queued>,
-    /// Keys the macros currently hold down on the virtual device.
-    macro_down: Vec<InputKey>,
+    macros: HashMap<InputKey, CompiledMacro>,
+    queue: Vec<Queued>,
+    seq: u64,
+    playing: HashMap<InputKey, Playing>,
+    /// Keys the macros hold down on the virtual device, with the macro key holding each.
+    macro_down: Vec<(InputKey, InputKey)>,
     /// Macro keys physically held; their repeats and releases are swallowed even if the macro goes.
     swallowed: HashSet<InputKey>,
 }
@@ -28,16 +50,20 @@ impl Engine {
         Engine {
             remapper: Remapper::new(&compiled.remaps, RemapperConfig::default()).expect("valid remapper config"),
             macros: compiled.macros.clone(),
-            queue: VecDeque::new(),
+            queue: Vec::new(),
+            seq: 0,
+            playing: HashMap::new(),
             macro_down: Vec::new(),
             swallowed: HashSet::new(),
         }
     }
 
-    /// New bindings. Keys already held keep their old output and a playing macro finishes.
-    pub fn replace(&mut self, compiled: &Compiled) {
+    /// New bindings. Keys already held keep their old output; playing macros stop (releasing what
+    /// they hold), so a repeating macro never outlives a profile switch or an edit.
+    pub fn replace(&mut self, compiled: &Compiled) -> Vec<KeyEvent> {
         self.remapper.replace_bindings(&compiled.remaps);
         self.macros = compiled.macros.clone();
+        self.abort_macros()
     }
 
     /// False once the escape chord has fired.
@@ -49,7 +75,7 @@ impl Engine {
         if !self.is_active() {
             return None;
         }
-        let next_step = self.queue.front().map(|q| q.due);
+        let next_step = self.queue.iter().map(|q| q.due).min();
         match (self.remapper.next_deadline(), next_step) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -69,18 +95,33 @@ impl Engine {
             out.extend(self.remapper.handle(event, now));
             return out;
         }
+        let key = event.key;
         match event.value {
             KeyValue::Press => {
-                self.swallowed.insert(event.key);
-                let playing = self.queue.iter().any(|q| q.source == event.key);
-                if !playing && let Some(steps) = self.macros.get(&event.key).cloned() {
-                    self.schedule(event.key, &steps, now);
-                    out.extend(self.play_due(now));
+                self.swallowed.insert(key);
+                match self.playing.get(&key).map(|p| p.mac.mode) {
+                    Some(MacroMode::Toggle) => out.extend(self.stop(key)),
+                    Some(_) => {} // already playing: a re-press doesn't restart it
+                    None => {
+                        if let Some(mac) = self.macros.get(&key).cloned() {
+                            let runs_left = match mac.mode {
+                                MacroMode::Once => Some(0),
+                                MacroMode::Count => Some(mac.count.saturating_sub(1)),
+                                MacroMode::WhileHeld | MacroMode::Toggle => None,
+                            };
+                            self.playing.insert(key, Playing { mac, runs_left, run_start: now });
+                            self.schedule_run(key, now);
+                            out.extend(self.play_due(now));
+                        }
+                    }
                 }
             }
             KeyValue::Repeat => {}
             KeyValue::Release => {
-                self.swallowed.remove(&event.key);
+                self.swallowed.remove(&key);
+                if self.playing.get(&key).is_some_and(|p| p.mac.mode == MacroMode::WhileHeld) {
+                    out.extend(self.stop(key));
+                }
             }
         }
         out
@@ -90,9 +131,7 @@ impl Engine {
     pub fn tick(&mut self, now: Instant) -> Vec<KeyEvent> {
         let mut out = self.remapper.tick(now);
         if !self.remapper.is_active() {
-            if !self.queue.is_empty() || !self.macro_down.is_empty() {
-                out.extend(self.abort_macros());
-            }
+            out.extend(self.abort_macros());
             return out;
         }
         out.extend(self.play_due(now));
@@ -109,13 +148,34 @@ impl Engine {
 
     fn abort_macros(&mut self) -> Vec<KeyEvent> {
         self.queue.clear();
-        self.macro_down.drain(..).rev().map(|key| KeyEvent { key, value: KeyValue::Release }).collect()
+        self.playing.clear();
+        self.macro_down.drain(..).rev().map(|(key, _)| KeyEvent { key, value: KeyValue::Release }).collect()
     }
 
-    /// Queue a macro after anything already queued.
-    fn schedule(&mut self, source: InputKey, steps: &[ResolvedStep], now: Instant) {
-        let mut at = self.queue.back().map_or(now, |q| q.due.max(now));
-        for step in steps {
+    /// Stop one macro, releasing the keys it holds.
+    fn stop(&mut self, source: InputKey) -> Vec<KeyEvent> {
+        self.playing.remove(&source);
+        self.queue.retain(|q| q.source != source);
+        let mut out = Vec::new();
+        self.macro_down.retain(|(key, src)| {
+            if *src == source {
+                out.push(KeyEvent { key: *key, value: KeyValue::Release });
+                false
+            } else {
+                true
+            }
+        });
+        out.reverse();
+        out
+    }
+
+    /// Queue one run of a playing macro starting at `start`.
+    fn schedule_run(&mut self, source: InputKey, start: Instant) {
+        let Some(playing) = self.playing.get_mut(&source) else { return };
+        playing.run_start = start;
+        let mut at = start;
+        let mut steps = Vec::new();
+        for step in &playing.mac.steps {
             let (key, value) = match *step {
                 ResolvedStep::Delay(d) => {
                     at += d;
@@ -124,21 +184,61 @@ impl Engine {
                 ResolvedStep::Down(key) => (key, KeyValue::Press),
                 ResolvedStep::Up(key) => (key, KeyValue::Release),
             };
-            self.queue.push_back(Queued { due: at, event: KeyEvent { key, value }, source });
+            steps.push((at, KeyEvent { key, value }));
+        }
+        if steps.is_empty() {
+            self.playing.remove(&source); // only delays: nothing to play
+            return;
+        }
+        let last = steps.len() - 1;
+        for (i, (due, event)) in steps.into_iter().enumerate() {
+            self.seq += 1;
+            self.queue.push(Queued { due, seq: self.seq, event, source, end_of_run: i == last });
         }
     }
 
     fn play_due(&mut self, now: Instant) -> Vec<KeyEvent> {
         let mut out = Vec::new();
-        while self.queue.front().is_some_and(|q| q.due <= now) {
-            let q = self.queue.pop_front().expect("front exists");
+        loop {
+            let Some(i) = (0..self.queue.len())
+                .filter(|&i| self.queue[i].due <= now)
+                .min_by_key(|&i| (self.queue[i].due, self.queue[i].seq))
+            else {
+                break;
+            };
+            let q = self.queue.swap_remove(i);
             match q.event.value {
-                KeyValue::Press => self.macro_down.push(q.event.key),
-                _ => self.macro_down.retain(|k| *k != q.event.key),
+                KeyValue::Press => self.macro_down.push((q.event.key, q.source)),
+                _ => {
+                    if let Some(at) = self.macro_down.iter().position(|(k, s)| *k == q.event.key && *s == q.source) {
+                        self.macro_down.remove(at);
+                    }
+                }
             }
             out.push(q.event);
+            if q.end_of_run {
+                self.next_run(q.source, q.due, now);
+            }
         }
         out
+    }
+
+    /// After a run ends at `ended`: queue the next one, or finish.
+    fn next_run(&mut self, source: InputKey, ended: Instant, now: Instant) {
+        let Some(playing) = self.playing.get_mut(&source) else { return };
+        match &mut playing.runs_left {
+            Some(0) => {
+                self.playing.remove(&source);
+                return;
+            }
+            Some(n) => *n -= 1,
+            None => {}
+        }
+        let mut start = (ended + playing.mac.gap).max(playing.run_start + MIN_LOOP_PERIOD);
+        if start + MAX_LAG < now {
+            start = now;
+        }
+        self.schedule_run(source, start);
     }
 }
 
@@ -194,14 +294,14 @@ impl Recorder {
         for key in self.held.drain(..).rev() {
             self.steps.push(MacroStep::Up(key.name().expect("recorded keys have names").into()));
         }
-        Macro { steps: self.steps }
+        Macro { steps: self.steps, ..Macro::default() }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use masterkeys_core::bindings::{Macro, MacroStep, compile, validate_macro};
+    use masterkeys_core::bindings::{Macro, MacroMode, MacroStep, compile, validate_macro};
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
     use steelseries_gg::input::{InputKey, KeyEvent, KeyValue};
@@ -224,7 +324,7 @@ mod tests {
     fn engine(remaps: &[(&str, &str)], macros: &[(&str, Vec<MacroStep>)]) -> Engine {
         let remaps: BTreeMap<String, String> = remaps.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         let macros: BTreeMap<String, Macro> =
-            macros.iter().map(|(a, steps)| (a.to_string(), Macro { steps: steps.clone() })).collect();
+            macros.iter().map(|(a, steps)| (a.to_string(), Macro { steps: steps.clone(), ..Macro::default() })).collect();
         let (compiled, warnings) = compile(&remaps, &macros);
         assert!(warnings.is_empty(), "{warnings:?}");
         Engine::new(&compiled)
@@ -327,6 +427,82 @@ mod tests {
         let out = e.tick(t + Duration::from_secs(2));
         assert!(out.contains(&release("left_ctrl")), "{out:?}");
         assert!(!e.is_active());
+    }
+
+    fn looping(mode: MacroMode, steps: Vec<MacroStep>, count: u32, gap_ms: u32) -> Engine {
+        let m = Macro { steps, mode, count, gap_ms };
+        let (compiled, warnings) = compile(&BTreeMap::new(), &BTreeMap::from([("f1".to_string(), m)]));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        Engine::new(&compiled)
+    }
+    fn tap_a() -> Vec<MacroStep> {
+        vec![down("a"), up("a")]
+    }
+    fn hold_a() -> Vec<MacroStep> {
+        vec![down("a"), MacroStep::Delay(100), up("a")]
+    }
+
+    #[test]
+    fn count_plays_n_times_with_gap() {
+        let mut e = looping(MacroMode::Count, tap_a(), 3, 10);
+        let t = Instant::now();
+        assert_eq!(e.handle(press("f1"), t), vec![press("a"), release("a")]);
+        assert_eq!(e.next_deadline(), Some(t + ms(10)));
+        assert_eq!(e.tick(t + ms(10)), vec![press("a"), release("a")]);
+        assert_eq!(e.tick(t + ms(20)), vec![press("a"), release("a")]);
+        assert_eq!(e.next_deadline(), None);
+    }
+
+    #[test]
+    fn toggle_repeats_until_pressed_again() {
+        let mut e = looping(MacroMode::Toggle, tap_a(), 1, 50);
+        let t = Instant::now();
+        assert_eq!(e.handle(press("f1"), t), vec![press("a"), release("a")]);
+        assert_eq!(e.handle(release("f1"), t + ms(5)), vec![]);
+        assert_eq!(e.tick(t + ms(50)), vec![press("a"), release("a")]);
+        assert_eq!(e.tick(t + ms(100)), vec![press("a"), release("a")]);
+        assert_eq!(e.handle(press("f1"), t + ms(120)), vec![]);
+        assert_eq!(e.next_deadline(), None, "second press stops it");
+        assert_eq!(e.handle(release("f1"), t + ms(125)), vec![]);
+        assert_eq!(e.handle(press("f1"), t + ms(200)), vec![press("a"), release("a")], "and a third starts it again");
+    }
+
+    #[test]
+    fn toggle_stop_mid_run_releases_held_keys() {
+        let mut e = looping(MacroMode::Toggle, hold_a(), 1, 0);
+        let t = Instant::now();
+        assert_eq!(e.handle(press("f1"), t), vec![press("a")]);
+        e.handle(release("f1"), t + ms(5));
+        assert_eq!(e.handle(press("f1"), t + ms(50)), vec![release("a")]);
+        assert_eq!(e.next_deadline(), None);
+    }
+
+    #[test]
+    fn while_held_stops_on_release() {
+        let mut e = looping(MacroMode::WhileHeld, hold_a(), 1, 0);
+        let t = Instant::now();
+        assert_eq!(e.handle(press("f1"), t), vec![press("a")]);
+        assert_eq!(e.tick(t + ms(100)), vec![release("a"), press("a")], "loops while held");
+        assert_eq!(e.handle(release("f1"), t + ms(150)), vec![release("a")]);
+        assert_eq!(e.next_deadline(), None);
+    }
+
+    #[test]
+    fn rebinding_stops_looping_macros() {
+        let mut e = looping(MacroMode::Toggle, hold_a(), 1, 0);
+        let t = Instant::now();
+        e.handle(press("f1"), t);
+        let same = compile(&BTreeMap::new(), &BTreeMap::new()).0;
+        assert_eq!(e.replace(&same), vec![release("a")]);
+        assert_eq!(e.next_deadline(), None);
+    }
+
+    #[test]
+    fn instant_loops_are_paced() {
+        let mut e = looping(MacroMode::Toggle, tap_a(), 1, 0);
+        let t = Instant::now();
+        e.handle(press("f1"), t);
+        assert_eq!(e.next_deadline(), Some(t + MIN_LOOP_PERIOD));
     }
 
     #[test]

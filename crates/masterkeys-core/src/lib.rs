@@ -4,6 +4,7 @@ pub mod bindings;
 pub mod dbus;
 pub mod gszones;
 pub mod layout;
+pub mod macro_text;
 pub mod process;
 pub mod profile;
 

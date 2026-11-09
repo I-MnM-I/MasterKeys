@@ -149,8 +149,7 @@ pub async fn pump(
                 if next.is_empty() {
                     break Ended::Stopped;
                 }
-                engine.replace(&next);
-                continue;
+                engine.replace(&next)
             }
         };
         if let Err(e) = sink.emit(&out) {

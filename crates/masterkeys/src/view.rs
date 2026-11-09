@@ -73,6 +73,7 @@ mod tests {
         let remaps = BTreeMap::from([("caps_lock".to_string(), "esc".to_string())]);
         let tap = Macro {
             steps: vec![MacroStep::Down("h".into()), MacroStep::Delay(100), MacroStep::Up("h".into()), MacroStep::Delay(150)],
+            ..Macro::default()
         };
         let macros = BTreeMap::from([("f1".to_string(), tap)]);
         (remaps, macros)

@@ -254,6 +254,7 @@ mod tests {
             "f1".into(),
             crate::bindings::Macro {
                 steps: vec![crate::bindings::MacroStep::Down("a".into()), crate::bindings::MacroStep::Up("a".into())],
+                ..crate::bindings::Macro::default()
             },
         );
         store.save(&p).unwrap();

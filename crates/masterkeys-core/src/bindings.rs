@@ -7,6 +7,7 @@ use steelseries_gg::input::{Action, BindingSet, ESCAPE_CHORD, InputKey, MAX_COMB
 
 pub const MAX_MACRO_STEPS: usize = 500;
 pub const MAX_DELAY_MS: u32 = 10_000;
+pub const MAX_REPEAT_COUNT: u32 = 1000;
 
 /// One step of a macro, with keys by name (see `InputKey::parse`) and delays in milliseconds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -17,9 +18,65 @@ pub enum MacroStep {
     Delay(u32),
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// How a macro plays when its key is pressed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MacroMode {
+    /// Once per press.
+    #[default]
+    Once,
+    /// Over and over while the key is held.
+    WhileHeld,
+    /// Press to start repeating forever, press again to stop.
+    Toggle,
+    /// `count` times per press.
+    Count,
+}
+
+impl MacroMode {
+    pub fn is_once(&self) -> bool {
+        *self == MacroMode::Once
+    }
+}
+
+fn one() -> u32 {
+    1
+}
+
+fn is_one(n: &u32) -> bool {
+    *n == 1
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Macro {
     pub steps: Vec<MacroStep>,
+    #[serde(default, skip_serializing_if = "MacroMode::is_once")]
+    pub mode: MacroMode,
+    /// Runs per press in `Count` mode.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub count: u32,
+    /// Pause between repeats, in milliseconds.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gap_ms: u32,
+}
+
+impl Default for Macro {
+    fn default() -> Self {
+        Macro { steps: Vec::new(), mode: MacroMode::Once, count: 1, gap_ms: 0 }
+    }
+}
+
+/// A macro ready to play.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledMacro {
+    pub steps: Vec<ResolvedStep>,
+    pub mode: MacroMode,
+    pub count: u32,
+    pub gap: Duration,
 }
 
 /// A macro step ready to play.
@@ -34,7 +91,7 @@ pub enum ResolvedStep {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Compiled {
     pub remaps: BindingSet,
-    pub macros: HashMap<InputKey, Vec<ResolvedStep>>,
+    pub macros: HashMap<InputKey, CompiledMacro>,
 }
 
 impl Compiled {
@@ -82,7 +139,22 @@ pub fn parse_target(text: &str) -> Result<Action, String> {
 }
 
 pub fn validate_macro(m: &Macro) -> Result<(), String> {
-    resolve(m).map(|_| ())
+    compile_macro(m).map(|_| ())
+}
+
+fn compile_macro(m: &Macro) -> Result<CompiledMacro, String> {
+    if m.mode == MacroMode::Count && !(1..=MAX_REPEAT_COUNT).contains(&m.count) {
+        return Err(format!("repeat count must be 1-{MAX_REPEAT_COUNT}"));
+    }
+    if m.gap_ms > MAX_DELAY_MS {
+        return Err(format!("the gap between repeats can be at most {MAX_DELAY_MS} ms"));
+    }
+    Ok(CompiledMacro {
+        steps: resolve(m)?,
+        mode: m.mode,
+        count: m.count,
+        gap: Duration::from_millis(u64::from(m.gap_ms)),
+    })
 }
 
 fn resolve(m: &Macro) -> Result<Vec<ResolvedStep>, String> {
@@ -141,7 +213,7 @@ pub fn compile(remaps: &BTreeMap<String, String>, macros: &BTreeMap<String, Macr
     let mut resolved = HashMap::new();
     for (source, m) in macros {
         let entry = parse_key(source).and_then(|s| check_macro_key(s).map(|()| s));
-        match entry.and_then(|s| resolve(m).map(|steps| (s, steps))) {
+        match entry.and_then(|s| compile_macro(m).map(|steps| (s, steps))) {
             Ok((key, steps)) => {
                 resolved.insert(key, steps);
             }
@@ -162,7 +234,7 @@ mod tests {
     }
 
     fn tap(name: &str) -> Macro {
-        Macro { steps: vec![MacroStep::Down(name.into()), MacroStep::Delay(30), MacroStep::Up(name.into())] }
+        Macro { steps: vec![MacroStep::Down(name.into()), MacroStep::Delay(30), MacroStep::Up(name.into())], ..Macro::default() }
     }
 
     #[test]
@@ -177,12 +249,12 @@ mod tests {
     #[test]
     fn macros_validate() {
         assert!(validate_macro(&Macro::default()).is_err());
-        let long = Macro { steps: vec![MacroStep::Delay(1); 501] };
+        let long = Macro { steps: vec![MacroStep::Delay(1); 501], ..Macro::default() };
         assert!(validate_macro(&long).is_err());
-        assert!(validate_macro(&Macro { steps: vec![MacroStep::Delay(10_001)] }).is_err());
-        assert!(validate_macro(&Macro { steps: vec![MacroStep::Down("a".into())] }).is_err());
-        assert!(validate_macro(&Macro { steps: vec![MacroStep::Up("a".into())] }).is_err());
-        assert!(validate_macro(&Macro { steps: vec![MacroStep::Down("nope".into()), MacroStep::Up("nope".into())] }).is_err());
+        assert!(validate_macro(&Macro { steps: vec![MacroStep::Delay(10_001)], ..Macro::default() }).is_err());
+        assert!(validate_macro(&Macro { steps: vec![MacroStep::Down("a".into())], ..Macro::default() }).is_err());
+        assert!(validate_macro(&Macro { steps: vec![MacroStep::Up("a".into())], ..Macro::default() }).is_err());
+        assert!(validate_macro(&Macro { steps: vec![MacroStep::Down("nope".into()), MacroStep::Up("nope".into())], ..Macro::default() }).is_err());
         assert!(validate_macro(&tap("a")).is_ok());
     }
 
@@ -202,7 +274,7 @@ mod tests {
         assert!(warnings.iter().any(|w| w.contains("f13")));
         assert!(warnings.iter().any(|w| w.contains("\"a\"") || w.contains(" a")));
         assert_eq!(
-            compiled.macros[&key("f1")],
+            compiled.macros[&key("f1")].steps,
             vec![ResolvedStep::Down(key("x")), ResolvedStep::Delay(std::time::Duration::from_millis(30)), ResolvedStep::Up(key("x"))]
         );
     }
@@ -213,6 +285,40 @@ mod tests {
         let (compiled, warnings) = compile(&BTreeMap::new(), &macros);
         assert!(compiled.macros.is_empty());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn old_macros_load_as_once() {
+        let m: Macro = serde_json::from_str(r#"{"steps":[{"down":"a"},{"up":"a"}]}"#).unwrap();
+        assert_eq!((m.mode, m.count, m.gap_ms), (MacroMode::Once, 1, 0));
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("mode") && !json.contains("gap_ms") && !json.contains("count"), "{json}");
+    }
+
+    #[test]
+    fn repeat_settings_validate() {
+        let mut m = tap("a");
+        m.mode = MacroMode::Count;
+        m.count = 0;
+        assert!(validate_macro(&m).is_err());
+        m.count = 1001;
+        assert!(validate_macro(&m).is_err());
+        m.count = 5;
+        assert!(validate_macro(&m).is_ok());
+        m.gap_ms = 10_001;
+        assert!(validate_macro(&m).is_err());
+    }
+
+    #[test]
+    fn compiled_macros_carry_their_mode() {
+        let mut m = tap("x");
+        m.mode = MacroMode::Toggle;
+        m.gap_ms = 100;
+        let (compiled, _) = compile(&BTreeMap::new(), &BTreeMap::from([("f1".to_string(), m)]));
+        let c = &compiled.macros[&key("f1")];
+        assert_eq!(c.mode, MacroMode::Toggle);
+        assert_eq!(c.gap, std::time::Duration::from_millis(100));
+        assert_eq!(c.steps.len(), 3);
     }
 
     #[test]
