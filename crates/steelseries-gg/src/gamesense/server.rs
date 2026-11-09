@@ -20,8 +20,6 @@ use tracing::{debug, info};
 use super::*;
 use crate::{Error, Result};
 
-/// Type alias for RGB callback functions.
-type RgbCallback = Box<dyn Fn(&str, u8, u8, u8) + Send + Sync>;
 
 /// Shared server state.
 struct ServerState {
@@ -34,8 +32,17 @@ struct ServerState {
     /// Last event values - optimize for frequent access
     event_values: HashMap<Arc<String>, HashMap<Arc<String>, i32>>,
 
-    /// Callback for RGB updates.
-    rgb_callback: Option<RgbCallback>,
+    /// Where colours, heartbeats and removed games go.
+    output: Option<tokio::sync::mpsc::UnboundedSender<GameSenseOutput>>,
+}
+
+impl ServerState {
+    /// Send to the output channel, if any; a closed channel is ignored.
+    fn emit(&self, out: GameSenseOutput) {
+        if let Some(tx) = &self.output {
+            let _ = tx.send(out);
+        }
+    }
 }
 
 impl Default for ServerState {
@@ -45,7 +52,7 @@ impl Default for ServerState {
             games: HashMap::with_capacity(8),
             bindings: HashMap::with_capacity(8),
             event_values: HashMap::with_capacity(8),
-            rgb_callback: None,
+            output: None,
         }
     }
 }
@@ -68,17 +75,13 @@ impl GameSenseServer {
         })
     }
 
-    /// Set a callback for RGB color changes.
-    pub async fn set_rgb_callback<F>(&self, callback: F)
-    where
-        F: Fn(&str, u8, u8, u8) + Send + Sync + 'static,
-    {
-        let mut state = self.state.write();
-        state.rgb_callback = Some(Box::new(callback));
+    /// Send colours, heartbeats and removed games to `tx`.
+    pub fn set_output(&self, tx: tokio::sync::mpsc::UnboundedSender<GameSenseOutput>) {
+        self.state.write().output = Some(tx);
     }
 
     /// Build the router.
-    fn router(&self) -> Router {
+    pub fn router(&self) -> Router {
         let state = self.state.clone();
 
         Router::new()
@@ -113,8 +116,13 @@ impl GameSenseServer {
         self.write_core_props().await?;
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr).await?;
-        axum::serve(listener, router).await?;
+        drop(router);
+        self.serve(listener).await
+    }
 
+    /// Serve on `listener` without writing coreProps.json (the caller publishes the address).
+    pub async fn serve(&self, listener: tokio::net::TcpListener) -> Result<()> {
+        axum::serve(listener, self.router()).await?;
         Ok(())
     }
 
@@ -349,12 +357,13 @@ async fn game_event(State(state): State<AppState>, Json(event): Json<GameEvent>)
 
     // Process handlers with read lock to allow concurrent event handling
     let state_read = state.read();
+    state_read.emit(GameSenseOutput::Heartbeat { game: event.game.clone() });
     if let Some(game_bindings) = state_read.bindings.get(&event.game)
         && let Some(binding) = game_bindings.get(&event.event)
     {
         // Process handlers
         for handler in &binding.handlers {
-            process_handler(handler, event.data.value, &state_read);
+            process_handler(&event.game, handler, event.data.value, &state_read);
         }
     }
 
@@ -362,14 +371,18 @@ async fn game_event(State(state): State<AppState>, Json(event): Json<GameEvent>)
 }
 
 /// Process a handler with the given value.
-fn process_handler(handler: &Handler, value: i32, state: &ServerState) {
+fn process_handler(game: &str, handler: &Handler, value: i32, state: &ServerState) {
     match handler {
-        Handler::RgbPerKeyZones { zone, color, .. } | Handler::Keyboard { zone, color, .. } => {
+        Handler::RgbPerKeyZones { zone, color, .. }
+        | Handler::Keyboard { zone, color, .. }
+        | Handler::RgbZonedDevice { zone, color, .. } => {
             if let Some((r, g, b)) = compute_color(color, value) {
                 debug!("Setting {} to RGB({}, {}, {})", zone, r, g, b);
-                if let Some(ref callback) = state.rgb_callback {
-                    callback(zone, r, g, b);
-                }
+                state.emit(GameSenseOutput::Color {
+                    game: game.to_string(),
+                    zone: zone.clone(),
+                    color: crate::rgb::Color::new(r, g, b),
+                });
             }
         }
         Handler::Screen { zone, datas } => {
@@ -408,8 +421,9 @@ fn compute_color(color: &ColorHandler, value: i32) -> Option<(u8, u8, u8)> {
 }
 
 /// Handle heartbeat.
-async fn heartbeat(State(_state): State<AppState>, Json(hb): Json<Heartbeat>) -> (StatusCode, Json<ApiResponse>) {
+async fn heartbeat(State(state): State<AppState>, Json(hb): Json<Heartbeat>) -> (StatusCode, Json<ApiResponse>) {
     debug!("Heartbeat from: {}", hb.game);
+    state.read().emit(GameSenseOutput::Heartbeat { game: hb.game });
     (StatusCode::OK, Json(ApiResponse::success()))
 }
 
@@ -418,6 +432,7 @@ async fn remove_game(State(state): State<AppState>, Json(req): Json<RemoveGame>)
     let mut state = state.write();
 
     info!("Removing game: {}", req.game);
+    state.emit(GameSenseOutput::GameRemoved { game: req.game.clone() });
 
     state.games.remove(&req.game);
     state.bindings.remove(&req.game);
@@ -468,6 +483,87 @@ mod tests {
         .unwrap();
         serve.abort();
         response.to_lowercase()
+    }
+
+    /// POST JSON to a router on an ephemeral port; returns the response status code.
+    async fn post(port: u16, path: &str, body: &str) -> u16 {
+        use std::io::{Read, Write};
+        let (path, body) = (path.to_string(), body.to_string());
+        tokio::task::spawn_blocking(move || {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let request = format!(
+                "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response.split_whitespace().nth(1).unwrap().parse().unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    /// A served router with its output channel.
+    async fn served() -> (u16, tokio::sync::mpsc::UnboundedReceiver<GameSenseOutput>, tokio::task::JoinHandle<()>) {
+        let server = GameSenseServer::new("127.0.0.1", 0).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        server.set_output(tx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let _ = server.serve(listener).await;
+        });
+        (port, rx, task)
+    }
+
+    #[tokio::test]
+    async fn events_send_heartbeat_and_colour_with_the_game() {
+        let (port, mut rx, task) = served().await;
+        let bind = r#"{"game":"G","event":"AMMO","handlers":[{"device-type":"keyboard","zone":"function-keys","color":{"red":255,"green":0,"blue":0}}]}"#;
+        assert_eq!(post(port, "/bind_game_event", bind).await, 200);
+        assert_eq!(post(port, "/game_event", r#"{"game":"G","event":"AMMO","data":{"value":5}}"#).await, 200);
+        assert_eq!(rx.recv().await, Some(GameSenseOutput::Heartbeat { game: "G".into() }));
+        assert_eq!(
+            rx.recv().await,
+            Some(GameSenseOutput::Color { game: "G".into(), zone: "function-keys".into(), color: crate::rgb::Color::RED })
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn zoned_device_handlers_work() {
+        let (port, mut rx, task) = served().await;
+        let bind = r#"{"game":"G","event":"HEALTH","handlers":[{"device-type":"rgb-zoned-device","zone":"three","color":{"gradient":{"zero":{"red":0,"green":0,"blue":0},"hundred":{"red":200,"green":100,"blue":0}}}}]}"#;
+        assert_eq!(post(port, "/bind_game_event", bind).await, 200);
+        assert_eq!(post(port, "/game_event", r#"{"game":"G","event":"HEALTH","data":{"value":50}}"#).await, 200);
+        rx.recv().await; // heartbeat
+        assert_eq!(
+            rx.recv().await,
+            Some(GameSenseOutput::Color { game: "G".into(), zone: "three".into(), color: crate::rgb::Color::new(100, 50, 0) })
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn heartbeat_and_remove_are_reported() {
+        let (port, mut rx, task) = served().await;
+        assert_eq!(post(port, "/game_heartbeat", r#"{"game":"G"}"#).await, 200);
+        assert_eq!(rx.recv().await, Some(GameSenseOutput::Heartbeat { game: "G".into() }));
+        assert_eq!(post(port, "/remove_game", r#"{"game":"G"}"#).await, 200);
+        assert_eq!(rx.recv().await, Some(GameSenseOutput::GameRemoved { game: "G".into() }));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn unknown_device_type_is_refused_and_server_keeps_working() {
+        let (port, mut rx, task) = served().await;
+        let bad = r#"{"game":"G","event":"X","handlers":[{"device-type":"toaster","zone":"one"}]}"#;
+        let status = post(port, "/bind_game_event", bad).await;
+        assert!((400..500).contains(&status), "{status}");
+        assert_eq!(post(port, "/game_heartbeat", r#"{"game":"G"}"#).await, 200);
+        assert_eq!(rx.recv().await, Some(GameSenseOutput::Heartbeat { game: "G".into() }));
+        task.abort();
     }
 
     #[tokio::test]

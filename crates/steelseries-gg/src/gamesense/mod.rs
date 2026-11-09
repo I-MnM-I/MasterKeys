@@ -7,6 +7,15 @@ mod server;
 
 pub use server::GameSenseServer;
 
+/// What the server tells its owner: zone colours from game events, signs of life, removed games.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GameSenseOutput {
+    Color { game: String, zone: String, color: crate::rgb::Color },
+    /// A heartbeat or any event from the game.
+    Heartbeat { game: String },
+    GameRemoved { game: String },
+}
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -87,6 +96,15 @@ pub enum Handler {
     /// RGB zone handler.
     #[serde(rename = "rgb-per-key-zones")]
     RgbPerKeyZones {
+        zone: String,
+        color: ColorHandler,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
+
+    /// Zoned RGB device handler (10-zone boards such as the Apex 3; zones "one".."twelve").
+    #[serde(rename = "rgb-zoned-device")]
+    RgbZonedDevice {
         zone: String,
         color: ColorHandler,
         #[serde(skip_serializing_if = "Option::is_none")]

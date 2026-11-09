@@ -17,3 +17,4 @@ at commit `84a015293606db70f39dc1e857b264648db3e489`, on 2026-11-08.
 - Kept docs: `docs/development/gamesense-api.md`, `gg-gamesense-engine.md`.
 - `input::Remapper::new` accepts an empty binding set (MasterKeys runs it for pass-through around macros); the empty check moved to `input::linux::run`.
 - `input::BindingSet` derives `PartialEq`/`Eq` (MasterKeys only re-sends bindings that changed).
+- `gamesense`: `set_rgb_callback` replaced by `set_output(mpsc sender of GameSenseOutput)` (colours carry the game; heartbeats and removed games are reported); `router()` public and `serve(listener)` added (serves without writing coreProps.json); `rgb-zoned-device` handlers supported.
