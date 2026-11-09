@@ -1,4 +1,4 @@
-import { Button, CheckBox, Slider, ComboBox, LineEdit, HorizontalBox, VerticalBox, GroupBox } from "std-widgets.slint";
+import { Button, CheckBox, Slider, ComboBox, LineEdit, TextEdit, HorizontalBox, VerticalBox, GroupBox } from "std-widgets.slint";
 import { Keyboard, KeyView } from "keyboard.slint";
 
 export { KeyView }
@@ -105,6 +105,12 @@ export component MainWindow inherits Window {
     in property <string> input-message: "";
     in property <bool> show-udev-command: false;
     in property <bool> gamesense-enabled: true;
+    in property <[string]> macro-modes;
+    in-out property <int> macro-mode: 0;
+    in-out property <string> macro-count: "1";
+    in-out property <string> macro-gap: "0";
+    in-out property <string> macro-text: "";
+    in property <string> macro-error: "";
     in property <string> gamesense-text: "";
 
     callback key-clicked(int);
@@ -131,6 +137,7 @@ export component MainWindow inherits Window {
     callback reset-key();
     callback select-by-press-clicked();
     callback gamesense-toggled(bool);
+    callback save-macro();
 
     VerticalBox {
         padding: 12px;
@@ -163,6 +170,8 @@ export component MainWindow inherits Window {
             }
             if root.key-title != "": GroupBox {
                 title: root.key-title;
+                VerticalLayout {
+                spacing: 6px;
                 HorizontalLayout {
                     spacing: 8px;
                     Text {
@@ -197,6 +206,60 @@ export component MainWindow inherits Window {
                             root.reset-key();
                         }
                     }
+                }
+                if root.key-remappable: HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        ComboBox {
+                            width: 170px;
+                            model: root.macro-modes;
+                            current-index <=> root.macro-mode;
+                        }
+                        if root.macro-mode == 3: HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Times";
+                                vertical-alignment: center;
+                            }
+                            LineEdit {
+                                width: 70px;
+                                text <=> root.macro-count;
+                            }
+                        }
+                        if root.macro-mode != 0: HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Gap (ms)";
+                                vertical-alignment: center;
+                            }
+                            LineEdit {
+                                width: 70px;
+                                text <=> root.macro-gap;
+                            }
+                        }
+                        Button {
+                            text: "Save macro";
+                            enabled: root.daemon-running && !root.recording;
+                            clicked => {
+                                root.save-macro();
+                            }
+                        }
+                        Text {
+                            text: root.macro-error;
+                            color: #ff6b6b;
+                            wrap: word-wrap;
+                            width: 170px;
+                        }
+                    }
+                    TextEdit {
+                        min-width: 260px;
+                        height: 120px;
+                        text <=> root.macro-text;
+                        read-only: root.recording;
+                    }
+                }
                 }
             }
         }

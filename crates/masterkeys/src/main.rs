@@ -6,7 +6,10 @@ use masterkeys::client::{self, Command, Event, Status};
 use masterkeys::effects::{EffectKind, build, kind_of, parse_color_input};
 use masterkeys::instance::claim_or_raise;
 use masterkeys::tray::{CloseAction, TrayModel, on_close, spawn_tray};
-use masterkeys::view::{binding_text, key_colors, key_name, marked, reselect};
+use masterkeys::view::{
+    LiveRecording, MODE_LABELS, binding_text, key_colors, key_name, marked, mode_from_index, mode_index, reselect,
+};
+use masterkeys_core::macro_text::{parse_text, to_text};
 use masterkeys_core::InputStatus;
 use masterkeys_core::bindings::Macro;
 use std::collections::BTreeMap;
@@ -60,6 +63,9 @@ struct App {
     selected_key: Option<usize>,
     select_by_press: bool,
     recording: bool,
+    /// The key being recorded for (fixed when Record was clicked) and what has been typed so far.
+    recording_key: Option<String>,
+    live: Option<LiveRecording>,
     /// The daemon is reachable (for the tray).
     daemon_up: bool,
     commands: UnboundedSender<Command>,
@@ -160,7 +166,34 @@ fn select_key(ui: &MainWindow, app: &mut App, i: usize) {
     ui.set_active_slot(0);
     set_slot(ui, app, 0, color);
     ui.set_remap_target("".into());
+    load_macro(ui, app);
     show_key_panel(ui, app);
+}
+
+/// Put the selected key's macro (if any) into the macro box and repeat controls.
+fn load_macro(ui: &MainWindow, app: &App) {
+    let m = app
+        .selected_key
+        .and_then(|i| app.layout.keys.get(i))
+        .and_then(|k| key_name(k.code))
+        .and_then(|name| app.macros.get(name))
+        .cloned()
+        .unwrap_or_default();
+    ui.set_macro_text(to_text(&m.steps).into());
+    ui.set_macro_mode(mode_index(m.mode));
+    ui.set_macro_count(m.count.to_string().into());
+    ui.set_macro_gap(m.gap_ms.to_string().into());
+    ui.set_macro_error("".into());
+}
+
+/// A macro from the panel's repeat controls and these steps, or what is wrong with them.
+fn macro_from_panel(ui: &MainWindow, steps: Vec<masterkeys_core::bindings::MacroStep>) -> Result<Macro, String> {
+    let mode = mode_from_index(ui.get_macro_mode());
+    let count = ui.get_macro_count().trim().parse().map_err(|_| "times must be a whole number".to_string())?;
+    let gap_ms = ui.get_macro_gap().trim().parse().map_err(|_| "gap must be a number of milliseconds".to_string())?;
+    let m = Macro { steps, mode, count, gap_ms };
+    masterkeys_core::bindings::validate_macro(&m)?;
+    Ok(m)
 }
 
 fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
@@ -193,6 +226,9 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
             if profile != app.active_profile {
                 app.active_profile = profile;
                 show_profiles(ui, app);
+                if !app.recording {
+                    load_macro(ui, app);
+                }
             }
             app.renderer.set_state(&state);
             ui.set_brightness(f32::from(state.brightness));
@@ -208,8 +244,24 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
             app.state = state;
             ui.set_error_text("".into());
         }
+        Event::Recorded(m) => {
+            ui.set_macro_text(to_text(&m.steps).into());
+            if let Some(key) = app.recording_key.take() {
+                match macro_from_panel(ui, m.steps) {
+                    Ok(m) => {
+                        ui.set_macro_error("".into());
+                        app.send(Command::SetMacro(key, m));
+                    }
+                    Err(e) => ui.set_macro_error(e.into()),
+                }
+            }
+        }
         Event::Key(code, true) => {
             app.pressed.insert(code);
+            if let Some(live) = &mut app.live {
+                live.feed(code, true, std::time::Instant::now());
+                ui.set_macro_text(live.text().into());
+            }
             if app.select_by_press && !app.recording {
                 app.select_by_press = false;
                 ui.set_select_by_press(false);
@@ -220,6 +272,10 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
         }
         Event::Key(code, false) => {
             app.pressed.remove(&code);
+            if let Some(live) = &mut app.live {
+                live.feed(code, false, std::time::Instant::now());
+                ui.set_macro_text(live.text().into());
+            }
         }
         Event::Error(message) => ui.set_error_text(message.into()),
     }
@@ -276,6 +332,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let mut labels: Vec<SharedString> = EffectKind::ALL.iter().map(|k| k.label().into()).collect();
     labels.push(PER_ZONE_LABEL.into());
     ui.set_effect_labels(ModelRc::new(VecModel::from(labels)));
+    ui.set_macro_modes(ModelRc::new(VecModel::from(MODE_LABELS.iter().map(|l| SharedString::from(*l)).collect::<Vec<_>>())));
     ui.set_presets(ModelRc::new(VecModel::from(PRESETS.iter().copied().map(to_slint).collect::<Vec<_>>())));
 
     let app = Rc::new(RefCell::new(App {
@@ -295,6 +352,8 @@ fn main() -> Result<(), slint::PlatformError> {
         selected_key: None,
         select_by_press: false,
         recording: false,
+        recording_key: None,
+        live: None,
         daemon_up: false,
         commands: commands.clone(),
     }));
@@ -327,9 +386,17 @@ fn main() -> Result<(), slint::PlatformError> {
         let Some(name) = app.selected_key.and_then(|i| app.layout.keys.get(i)).and_then(|k| key_name(k.code)) else {
             return;
         };
-        let command = if app.recording { Command::StopRecording(name.into()) } else { Command::StartRecording };
+        if app.recording {
+            app.live = None;
+            app.send(Command::StopRecording);
+        } else {
+            app.recording_key = Some(name.into());
+            app.live = Some(LiveRecording::start());
+            ui.set_macro_text("".into());
+            ui.set_macro_error("".into());
+            app.send(Command::StartRecording);
+        }
         app.recording = !app.recording;
-        app.send(command);
         show_key_panel(&ui, &app);
     });
 
@@ -523,6 +590,23 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
             });
         });
+    });
+
+    let weak = ui.as_weak();
+    let a = app.clone();
+    ui.on_save_macro(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let app = a.borrow();
+        let Some(name) = app.selected_key.and_then(|i| app.layout.keys.get(i)).and_then(|k| key_name(k.code)) else {
+            return;
+        };
+        match parse_text(&ui.get_macro_text()).and_then(|steps| macro_from_panel(&ui, steps)) {
+            Ok(m) => {
+                ui.set_macro_error("".into());
+                app.send(Command::SetMacro(name.into(), m));
+            }
+            Err(e) => ui.set_macro_error(e.into()),
+        }
     });
 
     let a = app.clone();

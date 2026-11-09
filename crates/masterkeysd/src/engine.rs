@@ -199,13 +199,10 @@ impl Engine {
 
     fn play_due(&mut self, now: Instant) -> Vec<KeyEvent> {
         let mut out = Vec::new();
-        loop {
-            let Some(i) = (0..self.queue.len())
-                .filter(|&i| self.queue[i].due <= now)
-                .min_by_key(|&i| (self.queue[i].due, self.queue[i].seq))
-            else {
-                break;
-            };
+        while let Some(i) = (0..self.queue.len())
+            .filter(|&i| self.queue[i].due <= now)
+            .min_by_key(|&i| (self.queue[i].due, self.queue[i].seq))
+        {
             let q = self.queue.swap_remove(i);
             match q.event.value {
                 KeyValue::Press => self.macro_down.push((q.event.key, q.source)),

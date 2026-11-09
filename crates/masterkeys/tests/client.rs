@@ -156,7 +156,7 @@ async fn remap_command_reaches_the_daemon() {
 }
 
 #[tokio::test]
-async fn recording_puts_a_macro_on_the_key() {
+async fn recording_comes_back_as_a_macro() {
     let mut h = start().await;
     h.until(|e| matches!(e, Event::Profiles(_))).await;
     h.commands.send(Command::StartRecording).unwrap();
@@ -164,8 +164,8 @@ async fn recording_puts_a_macro_on_the_key() {
     h.keys.send((30, true)).await.unwrap();
     h.keys.send((30, false)).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    h.commands.send(Command::StopRecording("f1".into())).unwrap();
-    h.until(|e| matches!(e, Event::State(r) if r.macros.contains_key("f1"))).await;
+    h.commands.send(Command::StopRecording).unwrap();
+    h.until(|e| matches!(e, Event::Recorded(m) if m.steps.len() >= 2)).await;
 }
 
 #[tokio::test]

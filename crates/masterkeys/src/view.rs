@@ -1,7 +1,7 @@
 //! What each key in the drawing should look like.
 
 use masterkeys_core::layout::Layout;
-use masterkeys_core::bindings::{Macro, MacroStep};
+use masterkeys_core::bindings::{MAX_DELAY_MS, Macro, MacroMode, MacroStep};
 use masterkeys_core::profile::ProfileSummary;
 use std::collections::BTreeMap;
 use steelseries_gg::input::InputKey;
@@ -28,9 +28,56 @@ pub fn binding_text(code: u16, remaps: &BTreeMap<String, String>, macros: &BTree
     if let Some(m) = macros.get(name) {
         let keys = m.steps.iter().filter(|s| !matches!(s, MacroStep::Delay(_))).count();
         let ms: u32 = m.steps.iter().map(|s| if let MacroStep::Delay(d) = s { *d } else { 0 }).sum();
-        return format!("Macro: {keys} steps, {:.1} s", f64::from(ms) / 1000.0);
+        let repeat = match m.mode {
+            MacroMode::Once => String::new(),
+            MacroMode::WhileHeld => ", repeat while held".into(),
+            MacroMode::Toggle => ", toggle repeat".into(),
+            MacroMode::Count => format!(", {} times", m.count),
+        };
+        return format!("Macro: {keys} steps, {:.1} s{repeat}", f64::from(ms) / 1000.0);
     }
     "Default".into()
+}
+
+/// The playback modes as the Key panel lists them.
+pub const MODE_LABELS: [&str; 4] = ["Once", "Repeat while held", "Toggle repeat", "Repeat N times"];
+const MODES: [MacroMode; 4] = [MacroMode::Once, MacroMode::WhileHeld, MacroMode::Toggle, MacroMode::Count];
+
+pub fn mode_index(mode: MacroMode) -> i32 {
+    MODES.iter().position(|m| *m == mode).unwrap_or(0) as i32
+}
+
+pub fn mode_from_index(i: i32) -> MacroMode {
+    usize::try_from(i).ok().and_then(|i| MODES.get(i)).copied().unwrap_or_default()
+}
+
+/// The keys pressed while recording, as macro text, built from the GUI's own key events (the
+/// daemon's exact recording replaces it on Stop).
+pub struct LiveRecording {
+    steps: Vec<MacroStep>,
+    last: Option<std::time::Instant>,
+}
+
+impl LiveRecording {
+    pub fn start() -> Self {
+        Self { steps: Vec::new(), last: None }
+    }
+
+    pub fn feed(&mut self, code: u16, pressed: bool, at: std::time::Instant) {
+        let Some(name) = key_name(code) else { return };
+        if let Some(last) = self.last {
+            let ms = at.saturating_duration_since(last).as_millis().min(u128::from(MAX_DELAY_MS)) as u32;
+            if ms >= 1 {
+                self.steps.push(MacroStep::Delay(ms));
+            }
+        }
+        self.last = Some(at);
+        self.steps.push(if pressed { MacroStep::Down(name.into()) } else { MacroStep::Up(name.into()) });
+    }
+
+    pub fn text(&self) -> String {
+        masterkeys_core::macro_text::to_text(&self.steps)
+    }
 }
 
 /// Whether a key has a remap or macro, for the marker on the drawing.
@@ -61,7 +108,7 @@ pub fn reselect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use masterkeys_core::bindings::{Macro, MacroStep};
+    use masterkeys_core::bindings::{Macro, MacroMode, MacroStep};
     use masterkeys_core::profile::ProfileSummary;
     use std::collections::BTreeMap;
 
@@ -86,6 +133,38 @@ mod tests {
         assert_eq!(binding_text(58, &remaps, &macros), "Remapped to esc");
         assert_eq!(binding_text(59, &remaps, &macros), "Macro: 2 steps, 0.2 s");
         assert_eq!(binding_text(0, &remaps, &macros), "Not remappable");
+    }
+
+    #[test]
+    fn binding_text_names_the_repeat_mode() {
+        let (remaps, mut macros) = binds();
+        macros.get_mut("f1").unwrap().mode = MacroMode::Toggle;
+        assert_eq!(binding_text(59, &remaps, &macros), "Macro: 2 steps, 0.2 s, toggle repeat");
+        let m = macros.get_mut("f1").unwrap();
+        m.mode = MacroMode::Count;
+        m.count = 5;
+        assert_eq!(binding_text(59, &remaps, &macros), "Macro: 2 steps, 0.2 s, 5 times");
+    }
+
+    #[test]
+    fn mode_list_round_trips() {
+        for mode in [MacroMode::Once, MacroMode::WhileHeld, MacroMode::Toggle, MacroMode::Count] {
+            assert_eq!(mode_from_index(mode_index(mode)), mode);
+        }
+        assert_eq!(MODE_LABELS.len(), 4);
+        assert_eq!(mode_from_index(99), MacroMode::Once);
+    }
+
+    #[test]
+    fn live_recording_text() {
+        let t = std::time::Instant::now();
+        let mut live = LiveRecording::start();
+        live.feed(42, true, t);
+        live.feed(35, true, t + std::time::Duration::from_millis(40));
+        live.feed(35, false, t + std::time::Duration::from_millis(40));
+        live.feed(42, false, t + std::time::Duration::from_millis(90));
+        live.feed(9999, true, t);
+        assert_eq!(live.text(), "down left_shift\nwait 40\ntap h\nwait 50\nup left_shift\n");
     }
 
     #[test]

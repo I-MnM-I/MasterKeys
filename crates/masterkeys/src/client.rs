@@ -28,8 +28,8 @@ pub enum Command {
     SetMacro(String, Macro),
     ClearMacro(String),
     StartRecording,
-    /// Stop recording and put the macro on this key.
-    StopRecording(String),
+    /// Stop recording; the macro comes back as `Event::Recorded`.
+    StopRecording,
     /// Whether the GUI wants key events (only while its window is open).
     KeysWanted(bool),
     SetGameSense(bool),
@@ -60,6 +60,8 @@ pub enum Event {
     /// The lighting, active profile, its bindings and what the daemon does with the keys.
     State(Box<StateReport>),
     Profiles(Vec<ProfileSummary>),
+    /// The daemon's recording, after `StopRecording`.
+    Recorded(Macro),
     Key(u16, bool),
     Error(String),
 }
@@ -222,6 +224,16 @@ async fn session(
                     }
                     continue;
                 }
+                if let Command::StopRecording = command {
+                    match proxy.stop_macro_recording().await {
+                        Ok(json) => match serde_json::from_str(&json) {
+                            Ok(m) => on_event(Event::Recorded(m)),
+                            Err(e) => on_event(Event::Error(json_error(e).to_string())),
+                        },
+                        Err(e) => on_event(Event::Error(e.to_string())),
+                    }
+                    continue;
+                }
                 if let Err(e) = send(&proxy, command).await {
                     on_event(Event::Error(e.to_string()));
                 }
@@ -265,12 +277,8 @@ async fn send(proxy: &DaemonProxy<'_>, command: Command) -> zbus::Result<()> {
         Command::SetMacro(key, m) => proxy.set_macro(&key, &serde_json::to_string(&m).map_err(json_error)?).await,
         Command::ClearMacro(key) => proxy.clear_macro(&key).await,
         Command::StartRecording => proxy.start_macro_recording().await,
-        Command::StopRecording(key) => {
-            let json = proxy.stop_macro_recording().await?;
-            proxy.set_macro(&key, &json).await
-        }
         Command::SetGameSense(enabled) => proxy.set_game_sense_enabled(enabled).await,
-        Command::StartDaemon | Command::KeysWanted(_) => Ok(()),
+        Command::StartDaemon | Command::KeysWanted(_) | Command::StopRecording => Ok(()),
     }
 }
 
