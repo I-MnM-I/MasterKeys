@@ -3,6 +3,7 @@
 use masterkeys_core::dbus::{BUS_NAME, OBJECT_PATH};
 use masterkeys_core::profile::ProfileStore;
 use masterkeysd::device::apex3_opener;
+use masterkeysd::gamesense::run_gamesense;
 use masterkeysd::input::run_input;
 use masterkeysd::keys::{KeyHub, drop_vanished, emit_keys};
 use masterkeysd::output::{self, Backoff, Shared};
@@ -55,7 +56,9 @@ async fn main() -> ExitCode {
         dirty: Arc::new(dirty_tx),
         bindings: Arc::new(watch::channel(Default::default()).0),
         input: Arc::new(watch::channel(Default::default()).0),
+        gamesense: Arc::new(watch::channel(Default::default()).0),
     };
+    core.gamesense.send_modify(|g| g.enabled = core.profiles.lock().unwrap().gamesense_enabled());
     core.refresh_bindings();
     let service = DaemonService::new(core.clone());
     let conn = match zbus::connection::Builder::session().serve_at(OBJECT_PATH, service).build().await {
@@ -83,7 +86,7 @@ async fn main() -> ExitCode {
     let (overlay_tx, overlay_rx) = watch::channel([None; ZONE_COUNT]);
     let shared = Shared { state: state_rx, connected: connected_tx, frame, overlay: overlay_rx };
     tokio::spawn(output::run(apex3_opener(), shared, Backoff::DEFAULT));
-    let _overlay_tx = overlay_tx; // wired to GameSense in the next task
+    tokio::spawn(run_gamesense(core.clone(), conn.clone(), overlay_tx));
     let (key_tx, key_rx) = tokio::sync::mpsc::channel(256);
     tokio::spawn(run_input(core.clone(), conn.clone(), want_reader, key_tx));
     tokio::spawn(emit_keys(conn.clone(), keys.clone(), key_rx));

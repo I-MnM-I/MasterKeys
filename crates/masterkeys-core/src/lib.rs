@@ -10,4 +10,4 @@ pub mod profile;
 pub mod render;
 pub mod state;
 
-pub use state::{InputStatus, LightingState, StateReport, parse_hex, to_hex};
+pub use state::{GameSenseStatus, InputStatus, LightingState, StateReport, parse_hex, to_hex};

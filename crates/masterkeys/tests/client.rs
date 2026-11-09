@@ -43,7 +43,9 @@ async fn start() -> Harness {
         dirty: Arc::new(dirty_tx),
         bindings: Arc::new(watch::channel(Default::default()).0),
         input: Arc::new(watch::channel(Default::default()).0),
+        gamesense: Arc::new(watch::channel(Default::default()).0),
     };
+    core.gamesense.send_modify(|g| g.enabled = core.profiles.lock().unwrap().gamesense_enabled());
     core.refresh_bindings();
     let service = DaemonService::new(core);
     let (a, b) = UnixStream::pair().unwrap();

@@ -6,7 +6,7 @@ use masterkeys_core::dbus::OBJECT_PATH;
 use masterkeys_core::bindings::{Compiled, Macro, compile};
 use masterkeys_core::profile::ProfileSummary;
 use masterkeys_core::render::Renderer;
-use masterkeys_core::{InputStatus, LightingState, StateReport, parse_hex};
+use masterkeys_core::{GameSenseStatus, InputStatus, LightingState, StateReport, parse_hex};
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;
@@ -53,6 +53,8 @@ pub struct DaemonCore {
     pub bindings: Arc<watch::Sender<Compiled>>,
     /// What the input task is doing, for `GetState`.
     pub input: Arc<watch::Sender<InputStatus>>,
+    /// GameSense on/off, active game and port, for `GetState`.
+    pub gamesense: Arc<watch::Sender<GameSenseStatus>>,
 }
 
 /// How long a macro recording takes keys before it stops by itself.
@@ -72,6 +74,7 @@ impl DaemonCore {
             remaps,
             macros,
             input: self.input.borrow().clone(),
+            gamesense: self.gamesense.borrow().clone(),
         };
         serde_json::to_string(&report).expect("state serializes")
     }
@@ -376,6 +379,19 @@ impl DaemonService {
             return Err(invalid("no keys were recorded".into()));
         }
         Ok(serde_json::to_string(&m).expect("macro serializes"))
+    }
+
+    /// Turn GameSense lighting on or off (kept across restarts); off clears game colours at once.
+    async fn set_game_sense_enabled(&self, enabled: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) {
+        self.core.profiles.lock().unwrap().set_gamesense_enabled(enabled);
+        self.core.gamesense.send_modify(|g| {
+            g.enabled = enabled;
+            if !enabled {
+                g.game = None;
+            }
+        });
+        self.core.mark_dirty();
+        self.core.announce_with(&emitter, false).await;
     }
 
     /// Start sending this caller `KeyEvent` signals.

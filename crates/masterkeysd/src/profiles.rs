@@ -42,6 +42,7 @@ pub struct Profiles {
     active: String,
     default: String,
     pending: Vec<StoreOp>,
+    gamesense_disabled: bool,
     /// Names of profile files on disk that couldn't be read; never written over.
     reserved: BTreeSet<String>,
 }
@@ -61,7 +62,7 @@ impl Profiles {
         let default = settings.default_profile.filter(|d| profiles.contains_key(d)).unwrap_or(first_name);
         let active = settings.active_profile.filter(|a| profiles.contains_key(a)).unwrap_or_else(|| default.clone());
         pending.push(StoreOp::Settings);
-        Self { profiles, active, default, pending, reserved: BTreeSet::new() }
+        Self { profiles, active, default, pending, gamesense_disabled: settings.gamesense_disabled, reserved: BTreeSet::new() }
     }
 
     pub fn active(&self) -> &Profile {
@@ -82,7 +83,22 @@ impl Profiles {
     }
 
     pub fn settings(&self) -> Settings {
-        Settings { default_profile: Some(self.default.clone()), active_profile: Some(self.active.clone()) }
+        Settings {
+            default_profile: Some(self.default.clone()),
+            active_profile: Some(self.active.clone()),
+            gamesense_disabled: self.gamesense_disabled,
+        }
+    }
+
+    pub fn gamesense_enabled(&self) -> bool {
+        !self.gamesense_disabled
+    }
+
+    pub fn set_gamesense_enabled(&mut self, enabled: bool) {
+        if self.gamesense_disabled == enabled {
+            self.gamesense_disabled = !enabled;
+            self.pending.push(StoreOp::Settings);
+        }
     }
 
     /// Disk changes made since the last call.
@@ -295,7 +311,7 @@ mod tests {
     fn three() -> Profiles {
         Profiles::from_loaded(
             vec![profile("Default", &[]), profile("Elden", &["eldenring.exe"]), profile("Factorio", &["factorio"])],
-            Settings { default_profile: Some("Default".into()), active_profile: None },
+            Settings { default_profile: Some("Default".into()), active_profile: None, ..Settings::default() },
         )
     }
 
@@ -315,7 +331,7 @@ mod tests {
     fn starts_on_saved_active_profile() {
         let p = Profiles::from_loaded(
             vec![profile("Default", &[]), profile("gaming", &[])],
-            Settings { default_profile: Some("Default".into()), active_profile: Some("gaming".into()) },
+            Settings { default_profile: Some("Default".into()), active_profile: Some("gaming".into()), ..Settings::default() },
         );
         assert_eq!(p.active().name, "gaming");
     }

@@ -26,6 +26,9 @@ pub struct Profile {
 pub struct Settings {
     pub default_profile: Option<String>,
     pub active_profile: Option<String>,
+    /// GameSense lighting turned off by the user.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gamesense_disabled: bool,
 }
 
 /// Profile names double as file names, so keep them safe for that.
@@ -375,7 +378,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = ProfileStore::new(dir.path());
         assert_eq!(store.load_settings(), Settings::default());
-        let s = Settings { default_profile: Some("Default".into()), active_profile: Some("gaming".into()) };
+        let s = Settings { default_profile: Some("Default".into()), active_profile: Some("gaming".into()), ..Settings::default() };
         store.save_settings(&s).unwrap();
         assert_eq!(store.load_settings(), s);
     }

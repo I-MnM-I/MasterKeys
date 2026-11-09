@@ -42,6 +42,7 @@ pub trait Daemon {
     async fn start_macro_recording(&self) -> zbus::Result<()>;
     /// JSON `Macro` of the keys pressed since `StartMacroRecording`.
     async fn stop_macro_recording(&self) -> zbus::Result<String>;
+    async fn set_game_sense_enabled(&self, enabled: bool) -> zbus::Result<()>;
     async fn subscribe_keys(&self) -> zbus::Result<()>;
     async fn unsubscribe_keys(&self) -> zbus::Result<()>;
 

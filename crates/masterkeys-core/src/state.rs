@@ -53,6 +53,22 @@ pub struct StateReport {
     pub macros: std::collections::BTreeMap<String, crate::bindings::Macro>,
     #[serde(default)]
     pub input: InputStatus,
+    #[serde(default)]
+    pub gamesense: GameSenseStatus,
+}
+
+/// GameSense: on or off, the game colouring the keyboard now, and the server's port (0 = not serving).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GameSenseStatus {
+    pub enabled: bool,
+    pub game: Option<String>,
+    pub port: u16,
+}
+
+impl Default for GameSenseStatus {
+    fn default() -> Self {
+        Self { enabled: true, game: None, port: 0 }
+    }
 }
 
 /// What the daemon is doing with the keyboard's keys.

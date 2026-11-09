@@ -24,7 +24,8 @@ struct Served {
     keys: mpsc::Sender<(u16, bool)>,
     want_reader: watch::Receiver<bool>,
     bindings: watch::Receiver<masterkeys_core::bindings::Compiled>,
-    _server: zbus::Connection,
+    core: DaemonCore,
+    server: zbus::Connection,
     _config: Option<tempfile::TempDir>,
 }
 
@@ -56,10 +57,13 @@ async fn serve_in(config: &Path) -> Served {
         dirty: Arc::new(dirty_tx),
         bindings: Arc::new(watch::channel(Default::default()).0),
         input: Arc::new(watch::channel(Default::default()).0),
+        gamesense: Arc::new(watch::channel(Default::default()).0),
     };
+    core.gamesense.send_modify(|g| g.enabled = core.profiles.lock().unwrap().gamesense_enabled());
     core.refresh_bindings();
     let bindings = core.bindings.subscribe();
-    let service = DaemonService::new(core);
+    let core_handle = core.clone();
+    let service = DaemonService::new(core.clone());
     let (a, b) = UnixStream::pair().unwrap();
     let server = Builder::unix_stream(a).server(Guid::generate()).p2p().serve_at(OBJECT_PATH, service);
     let client = Builder::unix_stream(b).p2p();
@@ -67,7 +71,7 @@ async fn serve_in(config: &Path) -> Served {
     let (server, client) = (server.unwrap(), client.unwrap());
     tokio::spawn(emit_keys(server.clone(), hub, keys_rx));
     let proxy = DaemonProxy::new(&client).await.unwrap();
-    Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, bindings, _server: server, _config: None }
+    Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, bindings, core: core_handle, server, _config: None }
 }
 
 async fn report(s: &Served) -> StateReport {
@@ -355,4 +359,36 @@ async fn bindings_survive_restart() {
     let s = serve_in(dir.path()).await;
     assert_eq!(report(&s).await.remaps.get("caps_lock").map(String::as_str), Some("esc"));
     assert_eq!(s.bindings.borrow().remaps.len(), 1);
+}
+
+#[tokio::test]
+async fn gamesense_toggle_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let s = serve_in(dir.path()).await;
+        assert!(report(&s).await.gamesense.enabled);
+        s.proxy.set_game_sense_enabled(false).await.unwrap();
+        assert!(!report(&s).await.gamesense.enabled);
+        settle_saver().await;
+    }
+    let s = serve_in(dir.path()).await;
+    assert!(!report(&s).await.gamesense.enabled);
+}
+
+#[tokio::test]
+async fn gamesense_reports_active_game() {
+    use steelseries_gg::gamesense::GameSenseOutput;
+    let s = serve().await;
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (overlay_tx, mut overlay_rx) = watch::channel([None; ZONE_COUNT]);
+    tokio::spawn(masterkeysd::gamesense::follow(s.core.clone(), s.server.clone(), rx, overlay_tx));
+    tx.send(GameSenseOutput::Color { game: "G".into(), zone: "all".into(), color: Color::RED }).unwrap();
+    overlay_rx.wait_for(|o| o.iter().all(Option::is_some)).await.unwrap();
+    assert_eq!(report(&s).await.gamesense.game.as_deref(), Some("G"));
+    s.proxy.set_game_sense_enabled(false).await.unwrap();
+    overlay_rx.wait_for(|o| o.iter().all(Option::is_none)).await.unwrap();
+    tx.send(GameSenseOutput::Color { game: "G".into(), zone: "one".into(), color: Color::RED }).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(overlay_rx.borrow().iter().all(Option::is_none), "ignored while disabled");
+    assert_eq!(report(&s).await.gamesense.game, None);
 }

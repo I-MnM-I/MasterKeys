@@ -1,5 +1,6 @@
 //! masterkeysd internals, as a library so integration tests can reach them.
 
+pub mod coreprops;
 pub mod device;
 pub mod engine;
 pub mod gamesense;
