@@ -13,7 +13,9 @@ install -Dm755 target/release/masterkeysd ~/.local/bin/masterkeysd
 install -Dm755 target/release/masterkeys ~/.local/bin/masterkeys
 install -Dm644 assets/masterkeysd.service ~/.config/systemd/user/masterkeysd.service
 install -Dm644 assets/masterkeys.desktop ~/.local/share/applications/masterkeys.desktop
+install -Dm644 assets/masterkeys-tray.desktop ~/.config/autostart/masterkeys-tray.desktop
 systemctl --user daemon-reload
 echo "Installed. Start the daemon now and at every login with:"
 echo "  systemctl --user enable --now masterkeysd"
 echo "If it was already running, restart it: systemctl --user restart masterkeysd"
+echo "The tray icon starts at login; to stop that, delete ~/.config/autostart/masterkeys-tray.desktop"
