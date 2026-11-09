@@ -2,6 +2,7 @@
 
 pub mod bindings;
 pub mod dbus;
+pub mod gszones;
 pub mod layout;
 pub mod process;
 pub mod profile;

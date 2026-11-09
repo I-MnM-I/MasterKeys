@@ -2,6 +2,7 @@
 
 pub mod device;
 pub mod engine;
+pub mod gamesense;
 pub mod input;
 pub mod keys;
 pub mod output;
