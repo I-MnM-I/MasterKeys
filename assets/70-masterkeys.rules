@@ -1,5 +1,5 @@
-# MasterKeys: let the logged-in user drive the SteelSeries Apex 3 (1038:161a)
-# lighting (hidraw), read its keys (evdev, for remapping) and create a virtual
+# MasterKeys: let the logged-in user drive the SteelSeries Apex 3 (1038:161a) and
+# Redragon K745 PRO (258a:010c, on its cable) lighting (hidraw), read the Apex 3's keys (evdev, for remapping) and create a virtual
 # keyboard (uinput).
 #
 # Install:
@@ -7,5 +7,6 @@
 #   sudo udevadm control --reload && sudo udevadm trigger
 
 KERNEL=="hidraw*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="161a", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="258a", ATTRS{idProduct}=="010c", TAG+="uaccess"
 SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="161a", TAG+="uaccess"
 KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

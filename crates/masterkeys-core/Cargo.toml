@@ -1,6 +1,6 @@
 [package]
 name = "masterkeys-core"
-version = "0.2.0"
+version = "0.3.0"
 description = "Shared types and D-Bus interface for MasterKeys"
 edition.workspace = true
 rust-version.workspace = true

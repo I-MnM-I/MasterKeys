@@ -1,6 +1,6 @@
 [package]
 name = "masterkeysd"
-version = "0.2.0"
+version = "0.3.0"
 description = "MasterKeys daemon: owns the SteelSeries Apex 3 and serves lighting control on D-Bus"
 edition.workspace = true
 rust-version.workspace = true

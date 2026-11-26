@@ -9,7 +9,8 @@ GameSense lighting from games.
 
 **Windows 11:** download `MasterKeys-windows.zip` from
 [Releases](https://github.com/I-MnM-I/MasterKeys/releases). On Windows it does remaps, macros, profiles
-and auto-switch with any keyboard (no lighting yet), and updates itself from the window.
+and auto-switch with any keyboard, lighting for the **Redragon K745 PRO** (on its USB cable) and the
+Apex 3, and updates itself from the window. The K745 PRO's lighting works on Linux too.
 
 ## Install
 
@@ -47,4 +48,7 @@ Shifts for 2 seconds** always stops remapping.
 ## Credits
 
 `crates/steelseries-gg` is a trimmed fork of [steelseriesgg-rs](https://github.com/Ven0m0/steelseriesgg-rs)
-(MIT); see `crates/steelseries-gg/UPSTREAM.md`. MasterKeys is MIT licensed (`LICENSE`).
+(MIT); see `crates/steelseries-gg/UPSTREAM.md`. The K745 PRO lighting frame follows the protocol
+write-up for the MCHOSE G75, which uses the same chip
+([Qyzom/MchooseG75-OpenRGB](https://github.com/Qyzom/MchooseG75-OpenRGB)); its key layout is generated
+from Redragon's own `KB.ini` by `tools/redragon/kbini_to_layout.py`. MasterKeys is MIT licensed (`LICENSE`).

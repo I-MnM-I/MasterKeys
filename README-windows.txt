@@ -1,7 +1,8 @@
 MasterKeys for Windows 11
 =========================
 
-Key remaps, macros and profiles that switch with your games, for any keyboard.
+Key remaps, macros and profiles that switch with your games, for any keyboard, plus
+lighting for the Redragon K745 PRO and the SteelSeries Apex 3.
 
 GETTING STARTED
 1. Unzip this folder somewhere you'll keep it (for example Documents\MasterKeys).
@@ -24,7 +25,8 @@ KNOWN LIMITS
 - Some games read the keyboard directly (often ones with anti-cheat) and ignore remaps.
 - Programs running as administrator only see remaps if MasterKeys is also run as
   administrator.
-- Lighting control for Redragon keyboards and mice is not in this version yet.
+- Lighting works with the Redragon K745 PRO on the USB cable (not 2.4 GHz or
+  Bluetooth) and the SteelSeries Apex 3. Redragon mice are not supported yet.
 
 WHERE THINGS ARE
 Profiles and the log file are in %APPDATA%\MasterKeys (paste that into Explorer's
@@ -41,3 +43,10 @@ TESTER CHECKLIST (please try each and report what happens)
 6. Launch masterkeys.exe again while it runs: the existing window comes up.
 7. Tick Start with Windows, restart the PC: MasterKeys is in the tray.
 8. When an update is offered, click Update: it restarts on the new version.
+9. Plug in the K745 by cable and start MasterKeys. Does the lighting panel appear?
+10. Press "Test: flash red". Does the whole board go red for 2 s? If not, press
+    Fn + \ and try again; say whether that helped.
+11. Pick Wave. Does it move across the board?
+12. Click Esc, pick blue, press "Apply to key". Is only Esc blue?
+13. Unplug and replug the cable. Does lighting come back within a few seconds?
+14. Quit MasterKeys. What does the keyboard show now?
