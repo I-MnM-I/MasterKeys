@@ -32,8 +32,14 @@ const EXTENDED: [(u16, u16); 18] = [
     (0x5D, 127), // Menu
 ];
 
+/// Plain scan codes past the 1:1 range: (scan, evdev code).
+const PLAIN: [(u16, u16); 1] = [(0x59, 117)]; // keypad =
+
+/// VK_PACKET: typed text (SendInput with KEYEVENTF_UNICODE), not a key.
+const VK_PACKET: u16 = 0xE7;
+
 /// Keys matched by virtual key: (vk, evdev code).
-const BY_VK: [(u16, u16); 12] = [
+const BY_VK: [(u16, u16); 24] = [
     (0x13, 119), // Pause
     (0x90, 69),  // Num Lock
     (0xAD, 113), // mute
@@ -46,20 +52,38 @@ const BY_VK: [(u16, u16); 12] = [
     (0xB4, 155), // mail
     (0xB5, 226), // media
     (0xB7, 140), // calculator
+    (0x7C, 183), // F13 … F24
+    (0x7D, 184),
+    (0x7E, 185),
+    (0x7F, 186),
+    (0x80, 187),
+    (0x81, 188),
+    (0x82, 189),
+    (0x83, 190),
+    (0x84, 191),
+    (0x85, 192),
+    (0x86, 193),
+    (0x87, 194),
 ];
 
 /// Set-1 scan codes 0x01–0x58 are the evdev codes themselves (0x54–0x55 are unused).
 pub fn scan_to_code(scan: u16, extended: bool) -> Option<u16> {
     if extended {
-        EXTENDED.iter().find(|(s, _)| *s == scan).map(|(_, c)| *c)
+        // Some Windows versions flag right Shift as extended.
+        EXTENDED.iter().chain(&[(0x36, 54)]).find(|(s, _)| *s == scan).map(|(_, c)| *c)
+    } else if matches!(scan, 0x01..=0x53 | 0x56..=0x58) {
+        Some(scan)
     } else {
-        matches!(scan, 0x01..=0x53 | 0x56..=0x58).then_some(scan)
+        PLAIN.iter().find(|(s, _)| *s == scan).map(|(_, c)| *c)
     }
 }
 
 pub fn code_to_scan(code: u16) -> Option<(u16, bool)> {
     if let Some((s, _)) = EXTENDED.iter().find(|(_, c)| *c == code) {
         return Some((*s, true));
+    }
+    if let Some((s, _)) = PLAIN.iter().find(|(_, c)| *c == code) {
+        return Some((*s, false));
     }
     scan_to_code(code, false).map(|s| (s, false))
 }
@@ -75,6 +99,9 @@ pub fn code_to_vk(code: u16) -> Option<u16> {
 /// The evdev code for a hook event: by virtual key where the scan code is ambiguous or missing, else
 /// by scan code.
 pub fn hook_code(vk: u16, scan: u16, extended: bool) -> Option<u16> {
+    if vk == VK_PACKET {
+        return None;
+    }
     vk_to_code(vk).or_else(|| scan_to_code(scan, extended))
 }
 
@@ -98,6 +125,31 @@ mod tests {
             };
             assert_eq!(back, Some(key.code), "{} ({})", key.label, key.code);
         }
+    }
+
+    #[test]
+    fn every_named_key_can_be_sent() {
+        use steelseries_gg::input::InputKey;
+        for code in 1..=0x2FF {
+            let Some(name) = InputKey::from_code(code).name() else { continue };
+            let back = match send_as(code) {
+                Some(Out::Scan(scan, extended)) => scan_to_code(scan, extended),
+                Some(Out::Vk(vk)) => vk_to_code(vk),
+                None => None,
+            };
+            assert_eq!(back, Some(code), "{name} ({code})");
+        }
+    }
+
+    #[test]
+    fn typed_text_is_no_key() {
+        // SendInput with KEYEVENTF_UNICODE arrives as VK_PACKET with the character in the scan code.
+        assert_eq!(hook_code(0xE7, 0x33, false), None);
+    }
+
+    #[test]
+    fn right_shift_with_the_extended_flag_is_right_shift() {
+        assert_eq!(scan_to_code(0x36, true), Some(54));
     }
 
     #[test]

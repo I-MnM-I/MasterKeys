@@ -4,7 +4,7 @@
 
 use super::{EV_KEY, Ended, GrabDecision, KeySink, RawEvent, grab_decision, pump};
 use crate::engine::Engine;
-use crate::hookrules::{Action, HookMode, HookState};
+use crate::hookrules::{Action, HookMode, HookState, MASTERKEYS_TAG, is_injected, should_beat};
 use crate::keys::PressTracker;
 use crate::winkeys::{Out, hook_code, send_as};
 use masterkeys_core::bindings::Compiled;
@@ -26,8 +26,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
 };
 
-/// Marks the events MasterKeys sends, so the hook lets them through.
-const MASTERKEYS_TAG: usize = 0x4D4B_4559; // "MKEY"
 const HEARTBEAT: Duration = Duration::from_millis(100);
 
 struct Hook {
@@ -94,21 +92,29 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             (HOOK.get(), hook_code(k.vkCode as u16, k.scanCode as u16, k.flags & LLKHF_EXTENDED != 0))
         {
             let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-            let ours = k.dwExtraInfo == MASTERKEYS_TAG;
+            let ours = is_injected(k.flags, k.dwExtraInfo);
             let now = h.start.elapsed().as_millis() as u64;
             let age = Duration::from_millis(now.saturating_sub(h.heartbeat.load(Ordering::Relaxed)));
             let mode = mode_of(h.mode.load(Ordering::Relaxed));
-            let (action, value) = h.state.lock().unwrap().on_key(mode, key, down, ours, age);
-            if action != Action::Pass {
-                let grabbed = action == Action::Swallow;
-                let sent = h
-                    .events
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .is_some_and(|tx| tx.send(RawEvent { grabbed, kind: EV_KEY, code: key, value }).is_ok());
-                if grabbed && sent {
-                    return 1;
+            let mut state = h.state.lock().unwrap();
+            let (action, value) = state.on_key(mode, key, down, ours, age);
+            match action {
+                Action::Pass => {}
+                Action::Drop => return 1,
+                Action::Report | Action::Swallow => {
+                    let grabbed = action == Action::Swallow;
+                    let sent = h
+                        .events
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .is_some_and(|tx| tx.send(RawEvent { grabbed, kind: EV_KEY, code: key, value }).is_ok());
+                    if grabbed && sent {
+                        return 1;
+                    }
+                    if grabbed {
+                        state.not_delivered(key);
+                    }
                 }
             }
         }
@@ -177,13 +183,17 @@ pub async fn grab_session(bindings: watch::Receiver<Compiled>, gui: &mpsc::Sende
         }
     }
     beat();
-    let heartbeat = tokio::spawn(async {
+    let (raw_tx, raw_rx) = mpsc::channel(256);
+    // Beat only while the engine has drained what it was given (see `should_beat`).
+    let queue = raw_tx.clone();
+    let heartbeat = tokio::spawn(async move {
         loop {
-            beat();
+            if should_beat(queue.max_capacity() - queue.capacity()) {
+                beat();
+            }
             tokio::time::sleep(HEARTBEAT).await;
         }
     });
-    let (raw_tx, raw_rx) = mpsc::channel(256);
     let mut hook_rx = listen(HookMode::Grab);
     let forward = tokio::spawn(async move {
         while let Some(e) = hook_rx.recv().await {
