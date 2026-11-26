@@ -50,18 +50,32 @@ impl Renderer {
 
     /// Compute the frame as it is `elapsed` after the effect started.
     pub fn frame_at(&mut self, elapsed: Duration) -> Vec<Color> {
-        let own_custom = matches!(self.engine.effect(), Effect::Custom { .. }) && self.device.id != APEX3_ID;
-        self.current = if own_custom {
-            self.device.leds.iter().map(|l| self.custom.get(&l.index).copied().unwrap_or(Color::BLACK)).collect()
-        } else {
+        let per_key = self.device.id != APEX3_ID;
+        self.current = match self.engine.effect() {
+            // A device with its own key colours shows them (keys without one are dark).
+            Effect::Custom { .. } if per_key && !self.custom.is_empty() => {
+                self.device.leds.iter().map(|l| self.custom.get(&l.index).copied().unwrap_or(Color::BLACK)).collect()
+            }
+            // Without any, it shows the Apex 3's zone colours across the board.
+            Effect::Custom { colors } if per_key => {
+                let last = colors.len().saturating_sub(1);
+                let n = colors.len() as f32;
+                self.device
+                    .leds
+                    .iter()
+                    .map(|l| colors.get(((l.x * n) as usize).min(last)).copied().unwrap_or(Color::BLACK))
+                    .collect()
+            }
+            _ => {
             let strip = self.engine.compute_at(elapsed);
             let last = strip.len().saturating_sub(1);
             let n = self.device.strip.max(1) as f32;
             self.device
                 .leds
                 .iter()
-                .map(|l| strip.get(((l.x * n) as usize).min(last)).copied().unwrap_or(Color::BLACK))
-                .collect()
+                    .map(|l| strip.get(((l.x * n) as usize).min(last)).copied().unwrap_or(Color::BLACK))
+                    .collect()
+            }
         };
         self.current.clone()
     }
@@ -182,5 +196,18 @@ mod tests {
             let want = if led.index == 0 { Color::RED } else { Color::BLACK };
             assert_eq!(*color, want, "led {}", led.index);
         }
+    }
+
+    #[test]
+    fn k745_without_key_map_follows_apex_zones_under_custom() {
+        let d = DeviceInfo::k745pro();
+        let zones: Vec<Color> = (0..10).map(|i| Color::new(i * 25, 0, 0)).collect();
+        let mut r = Renderer::new(&d);
+        r.set_state(&state(Effect::Custom { colors: zones.clone() }));
+        let frame = r.frame();
+        let esc = d.leds.iter().position(|l| l.key == Some(1)).unwrap();
+        let right = (0..d.leds.len()).max_by(|&a, &b| d.leds[a].x.total_cmp(&d.leds[b].x)).unwrap();
+        assert_eq!(frame[esc], zones[0]);
+        assert_eq!(frame[right], zones[9]);
     }
 }

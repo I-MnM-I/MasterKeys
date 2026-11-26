@@ -114,6 +114,7 @@ impl Lighting for K745 {
     }
 
     fn write(&mut self, colors: &[Color]) -> steelseries_gg::Result<()> {
+        // The output loop already waits `min_gap`; this only guards against a caller that doesn't.
         if let Some(wait) = self.last_sent.and_then(|t| MIN_GAP.checked_sub(t.elapsed())) {
             std::thread::sleep(wait);
         }
@@ -126,6 +127,10 @@ impl Lighting for K745 {
     fn set_brightness(&mut self, percent: u8) -> steelseries_gg::Result<()> {
         self.brightness = percent.min(100);
         Ok(())
+    }
+
+    fn min_gap(&self) -> Duration {
+        MIN_GAP
     }
 }
 

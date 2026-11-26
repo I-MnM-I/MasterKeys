@@ -10,6 +10,10 @@ pub trait Lighting: Send {
     /// One colour per `info().leds`, same order.
     fn write(&mut self, colors: &[Color]) -> steelseries_gg::Result<()>;
     fn set_brightness(&mut self, percent: u8) -> steelseries_gg::Result<()>;
+    /// Shortest time between two `write`s the device accepts; the output loop waits it out.
+    fn min_gap(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
 }
 
 /// The Apex 3 with its description.

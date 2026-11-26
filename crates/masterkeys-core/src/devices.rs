@@ -62,6 +62,11 @@ impl DeviceInfo {
         DeviceInfo { id: K745_ID.into(), name: "Redragon K745 PRO".into(), kind: DeviceKind::Keyboard, strip: 22, leds }
     }
 
+    /// Every supported device that lights each key on its own (everything but the Apex 3).
+    pub fn per_key() -> Vec<DeviceInfo> {
+        vec![Self::k745pro()]
+    }
+
     pub fn by_id(id: &str) -> Option<DeviceInfo> {
         match id {
             APEX3_ID => Some(Self::apex3()),

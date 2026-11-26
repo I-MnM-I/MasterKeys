@@ -199,20 +199,47 @@ impl DaemonService {
         Ok(())
     }
 
-    /// What the current state shows: rendered directly when it doesn't animate (the output loop may not
-    /// have sent it yet), otherwise the frame last sent.
-    fn shown_colors(&self) -> Vec<Color> {
-        let mut renderer = Renderer::new(&masterkeys_core::devices::DeviceInfo::apex3());
-        renderer.set_state(&self.core.state.borrow());
-        if renderer.next_frame_in().is_none() {
+    /// The active profile's lighting: what setters build on, so a test flash on screen never gets saved.
+    fn base(&self) -> LightingState {
+        self.core.profiles.lock().unwrap().active().lighting.clone()
+    }
+
+    /// What `base` shows on the Apex 3: rendered directly when it doesn't animate, or while something
+    /// else (a test flash) is on screen; otherwise the frame last sent.
+    fn shown_colors(&self, base: &LightingState) -> Vec<Color> {
+        let mut renderer = Renderer::new(&DeviceInfo::apex3());
+        renderer.set_state(base);
+        if renderer.next_frame_in().is_none() || *self.core.state.borrow() != *base {
             renderer.frame()
         } else {
             self.core.frame.lock().unwrap().to_vec()
         }
     }
 
+    /// `base` as per-key colours: the Apex 3's zones as shown, and every per-key device's keys as they
+    /// look now (unless it already has its own colours under Custom), so editing one key or zone keeps
+    /// the rest.
+    fn as_custom(&self, base: &LightingState) -> LightingState {
+        let mut custom = base.clone();
+        let colors = match &base.effect {
+            Effect::Custom { colors } => colors.clone(),
+            _ => self.shown_colors(base),
+        };
+        for info in DeviceInfo::per_key() {
+            let own = matches!(base.effect, Effect::Custom { .. }) && base.custom.contains_key(&info.id);
+            if !own {
+                let mut renderer = Renderer::new(&info);
+                renderer.set_state(base);
+                let frame = renderer.frame();
+                custom.custom.insert(info.id.clone(), info.leds.iter().map(|l| l.index).zip(frame).collect());
+            }
+        }
+        custom.effect = Effect::Custom { colors };
+        custom
+    }
+
     fn with_effect(&self, effect: Effect) -> LightingState {
-        LightingState { effect, ..self.core.state.borrow().clone() }
+        LightingState { effect, ..self.base() }
     }
 }
 
@@ -249,9 +276,11 @@ impl DaemonService {
             return Err(invalid(format!("zone must be 0-{}, got {zone}", ZONE_COUNT - 1)));
         }
         let color = parse_hex(color).map_err(invalid)?;
-        let mut colors = self.shown_colors();
-        colors[zone] = color;
-        self.apply(self.with_effect(Effect::Custom { colors }), &emitter).await
+        let mut candidate = self.as_custom(&self.base());
+        if let Effect::Custom { colors } = &mut candidate.effect {
+            colors[zone] = color;
+        }
+        self.apply(candidate, &emitter).await
     }
 
     /// JSON list of `DeviceInfo` for the connected lighting devices.
@@ -274,34 +303,26 @@ impl DaemonService {
             return Err(invalid(format!("{} has no LED {led}", info.name)));
         }
         let color = parse_hex(color).map_err(invalid)?;
-        let mut candidate = self.core.state.borrow().clone();
-        let mut colors = match &candidate.effect {
-            Effect::Custom { colors } => colors.clone(),
-            _ => self.shown_colors(),
-        };
+        let mut candidate = self.as_custom(&self.base());
         if info.id == APEX3_ID {
-            colors[usize::from(led)] = color;
+            if let Effect::Custom { colors } = &mut candidate.effect {
+                colors[usize::from(led)] = color;
+            }
         } else {
             candidate.custom.entry(info.id).or_default().insert(led, color);
         }
-        candidate.effect = Effect::Custom { colors };
         self.apply(candidate, &emitter).await
     }
 
     /// Show solid red on `device` for 2 s, then the active profile's lighting. Not saved, not announced.
     async fn test_flash(&self, device: &str) -> Result<(), ServiceError> {
         let info = DeviceInfo::by_id(device).ok_or_else(|| invalid(format!("unknown device {device:?}")))?;
-        let mut flash = self.core.state.borrow().clone();
-        let mut colors = match &flash.effect {
-            Effect::Custom { colors } => colors.clone(),
-            _ => self.shown_colors(),
-        };
+        let mut flash = self.as_custom(&self.base());
         if info.id == APEX3_ID {
-            colors = vec![Color::RED; ZONE_COUNT];
+            flash.effect = Effect::Custom { colors: vec![Color::RED; ZONE_COUNT] };
         } else {
             flash.custom.insert(info.id.clone(), info.leds.iter().map(|l| (l.index, Color::RED)).collect());
         }
-        flash.effect = Effect::Custom { colors };
         self.core.state.send_replace(flash);
         let core = self.core.clone();
         tokio::spawn(async move {
@@ -317,7 +338,7 @@ impl DaemonService {
         percent: u8,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<(), ServiceError> {
-        let candidate = LightingState { brightness: percent, ..self.core.state.borrow().clone() };
+        let candidate = LightingState { brightness: percent, ..self.base() };
         self.apply(candidate, &emitter).await
     }
 

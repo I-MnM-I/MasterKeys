@@ -8,7 +8,7 @@ use masterkeysd::keys::{KeyHub, emit_keys};
 use masterkeysd::persist::{load_profiles, saver};
 use masterkeysd::service::{DaemonCore, DaemonService};
 use masterkeys_core::devices::DeviceInfo;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
@@ -426,7 +426,9 @@ async fn led_colour_keeps_apex_colours() {
     s.proxy.set_led_color("k745pro", 0, "ff0000").await.unwrap();
     let state = s.state.borrow().clone();
     assert_eq!(state.effect, Effect::Custom { colors: shown });
-    assert_eq!(state.custom["k745pro"], BTreeMap::from([(0u16, Color::RED)]));
+    // The K745 keeps every other key as it looked; the coloured one changes.
+    assert_eq!(state.custom["k745pro"].len(), DeviceInfo::k745pro().leds.len());
+    assert_eq!(state.custom["k745pro"][&0], Color::RED);
     // On the Apex 3, an LED is a zone.
     s.proxy.set_led_color("apex3", 2, "0000ff").await.unwrap();
     let Effect::Custom { colors } = s.state.borrow().effect.clone() else { panic!("not custom") };
@@ -463,4 +465,31 @@ async fn test_flash_is_not_saved() {
     let profile = s.core.profiles.lock().unwrap().active().lighting.clone();
     assert_eq!(profile.effect, Effect::Static { color: Color::GREEN });
     assert!(s.proxy.test_flash("nope").await.is_err());
+}
+
+#[tokio::test]
+async fn edit_during_flash_does_not_save_red() {
+    let s = serve().await;
+    s.proxy.set_all_color("00ff00").await.unwrap();
+    s.proxy.test_flash("k745pro").await.unwrap();
+    s.proxy.set_brightness(50).await.unwrap();
+    let saved = s.core.profiles.lock().unwrap().active().lighting.clone();
+    assert_eq!(saved.effect, Effect::Static { color: Color::GREEN });
+    assert!(saved.custom.is_empty(), "{:?}", saved.custom);
+    assert_eq!(saved.brightness, 50);
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    assert_eq!(s.state.borrow().effect, Effect::Static { color: Color::GREEN });
+}
+
+#[tokio::test]
+async fn led_colour_keeps_other_k745_keys() {
+    let s = serve().await;
+    s.proxy.set_all_color("ffffff").await.unwrap();
+    s.proxy.set_led_color("k745pro", 0, "ff0000").await.unwrap();
+    let state = s.state.borrow().clone();
+    let map = &state.custom["k745pro"];
+    let leds = DeviceInfo::k745pro().leds;
+    assert_eq!(map.len(), leds.len());
+    assert_eq!(map[&0], Color::RED);
+    assert!(leds.iter().filter(|l| l.index != 0).all(|l| map[&l.index] == Color::WHITE));
 }

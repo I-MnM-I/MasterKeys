@@ -82,6 +82,7 @@ async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut 
     renderer.set_state(&state);
     // False once GameSense went away (or for devices without it); then the overlay is never waited on.
     let mut overlay_alive = shared.overlay.is_some();
+    let mut last_write: Option<tokio::time::Instant> = None;
     if let Err(e) = device.set_brightness(state.brightness) {
         return e;
     }
@@ -94,9 +95,14 @@ async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut 
             }
             None => frame.clone(),
         };
+        // Wait out the device's minimum gap here, asleep, rather than blocking a runtime thread in the driver.
+        if let Some(last) = last_write {
+            tokio::time::sleep_until(last + device.min_gap()).await;
+        }
         if let Err(e) = device.write(&shown) {
             return e;
         }
+        last_write = Some(tokio::time::Instant::now());
         if let Some(sent) = &shared.frame {
             *sent.lock().unwrap() = frame;
         }
@@ -399,5 +405,46 @@ mod tests {
         wait(2.5).await;
         assert_eq!(h.opens.load(Ordering::SeqCst), 1, "not reopened yet (1 s pause)");
         assert!(!h.connected(), "unplug noticed by the keepalive");
+    }
+
+    /// Records the (virtual) time of every write and asks for a 35 ms gap.
+    struct Gapped {
+        info: DeviceInfo,
+        at: Arc<Mutex<Vec<tokio::time::Instant>>>,
+    }
+
+    impl Lighting for Gapped {
+        fn info(&self) -> &DeviceInfo {
+            &self.info
+        }
+        fn write(&mut self, _: &[Color]) -> steelseries_gg::Result<()> {
+            self.at.lock().unwrap().push(tokio::time::Instant::now());
+            Ok(())
+        }
+        fn set_brightness(&mut self, _: u8) -> steelseries_gg::Result<()> {
+            Ok(())
+        }
+        fn min_gap(&self) -> Duration {
+            Duration::from_millis(35)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn device_gap_is_waited_out_by_the_loop() {
+        let at = Arc::new(Mutex::new(Vec::new()));
+        let a = at.clone();
+        let opener: Opener =
+            Box::new(move || Ok(Box::new(Gapped { info: DeviceInfo::k745pro(), at: a.clone() }) as Box<dyn Lighting>));
+        let spectrum = LightingState { effect: Effect::Spectrum { speed: 1.0 }, ..Default::default() };
+        let (_state_tx, state_rx) = watch::channel(spectrum);
+        let (devices_tx, _devices) = watch::channel(BTreeSet::new());
+        let shared = Shared { state: state_rx, devices: devices_tx, frame: None, overlay: None };
+        tokio::spawn(run(opener, DeviceInfo::k745pro(), shared, Backoff::SCAN));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let at = at.lock().unwrap().clone();
+        assert!(at.len() > 5, "{} writes", at.len());
+        for w in at.windows(2) {
+            assert!(w[1] - w[0] >= Duration::from_millis(35), "{:?}", w[1] - w[0]);
+        }
     }
 }
