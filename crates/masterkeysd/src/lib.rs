@@ -6,6 +6,7 @@ pub mod coreprops;
 pub mod device;
 pub mod embedded;
 pub mod engine;
+pub mod winkeys;
 pub mod gamesense;
 pub mod input;
 pub mod keys;
