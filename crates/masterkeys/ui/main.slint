@@ -108,6 +108,10 @@ export component MainWindow inherits Window {
     /// Lighting and GameSense controls (off on Windows, where no supported keyboard is driven).
     in property <bool> lighting-available: true;
     in property <bool> show-autostart: false;
+    in property <string> update-text: "";
+    in property <bool> can-install-update: false;
+    in property <bool> installing-update: false;
+    in property <string> update-error: "";
     in-out property <bool> autostart: false;
     in property <[string]> macro-modes;
     in-out property <int> macro-mode: 0;
@@ -142,11 +146,36 @@ export component MainWindow inherits Window {
     callback select-by-press-clicked();
     callback gamesense-toggled(bool);
     callback autostart-toggled(bool);
+    callback install-update();
+    callback open-release();
     callback save-macro();
 
     VerticalBox {
         padding: 12px;
         spacing: 12px;
+
+        if root.update-text != "": HorizontalBox {
+            spacing: 8px;
+            vertical-stretch: 0;
+            alignment: start;
+            Text {
+                text: root.update-error != "" ? root.update-text + " — " + root.update-error : root.update-text;
+                vertical-alignment: center;
+            }
+            if root.can-install-update: Button {
+                text: root.installing-update ? "Updating…" : "Update";
+                enabled: !root.installing-update;
+                clicked => {
+                    root.install-update();
+                }
+            }
+            Button {
+                text: "What's new";
+                clicked => {
+                    root.open-release();
+                }
+            }
+        }
 
         board := Rectangle {
             min-height: 160px;

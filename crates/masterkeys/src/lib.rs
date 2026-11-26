@@ -7,3 +7,4 @@ pub mod tray;
 pub mod instance;
 pub mod autostart;
 pub mod logfile;
+pub mod update;

@@ -315,7 +315,17 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(windows)]
     log_to_file();
     let start_hidden = std::env::args().skip(1).any(|a| a == "--tray");
-    let Some(instance) = claim_or_raise() else {
+    let replacing = std::env::args().any(|a| a == masterkeys::update::REPLACING_ARG);
+    // After an update the old version may still be closing; give it a few seconds.
+    let claim = || {
+        (0..if replacing { 50 } else { 1 }).find_map(|i| {
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            claim_or_raise()
+        })
+    };
+    let Some(instance) = claim() else {
         return Ok(()); // the running GUI was asked to show its window
     };
     let ui = MainWindow::new()?;
@@ -624,6 +634,8 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
+    watch_for_updates(&ui);
+
     let weak = ui.as_weak();
     let a = app.clone();
     ui.on_save_macro(move || {
@@ -715,4 +727,78 @@ fn log_to_file() {
     let _ = masterkeys::logfile::rotate_if_big(&path, 1_048_576);
     let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
     tracing_subscriber::fmt().with_ansi(false).with_writer(std::sync::Mutex::new(file)).init();
+}
+
+/// Check GitHub for a newer release now and every 24 h, and wire the update bar's buttons.
+fn watch_for_updates(ui: &MainWindow) {
+    use masterkeys::update::{Release, bar_text, fetch_latest};
+    use std::sync::{Arc, Mutex};
+    const CURRENT: &str = env!("CARGO_PKG_VERSION");
+    let latest: Arc<Mutex<Option<Release>>> = Arc::default();
+
+    let weak = ui.as_weak();
+    let found = latest.clone();
+    std::thread::spawn(move || {
+        loop {
+            let result = fetch_latest();
+            let text = bar_text(CURRENT, &result);
+            if !text.is_empty() {
+                let release = result.ok();
+                let installable = cfg!(windows) && release.as_ref().is_some_and(Release::can_install);
+                *found.lock().unwrap() = release;
+                let weak = weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_update_text(text.into());
+                        ui.set_can_install_update(installable);
+                    }
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_secs(24 * 60 * 60));
+        }
+    });
+
+    let page = latest.clone();
+    ui.on_open_release(move || {
+        let url = page.lock().unwrap().as_ref().map(|r| r.page_url.clone());
+        if let Some(url) = url {
+            open_url(&url);
+        }
+    });
+
+    #[cfg(windows)]
+    {
+        let weak = ui.as_weak();
+        ui.on_install_update(move || {
+            let Some(release) = latest.lock().unwrap().clone() else { return };
+            if let Some(ui) = weak.upgrade() {
+                ui.set_installing_update(true);
+                ui.set_update_error("".into());
+            }
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let result = masterkeys::update::install(&release);
+                let _ = slint::invoke_from_event_loop(move || match result {
+                    // The new version is starting; this one steps aside.
+                    Ok(()) => drop(slint::quit_event_loop()),
+                    Err(e) => {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.set_installing_update(false);
+                            ui.set_update_error(e.into());
+                        }
+                    }
+                });
+            });
+        });
+    }
+}
+
+fn open_url(url: &str) {
+    #[cfg(windows)]
+    let opened = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(not(windows))]
+    let opened = std::process::Command::new("xdg-open").arg(url).spawn();
+    if let Err(e) = opened {
+        eprintln!("masterkeys: cannot open {url}: {e}");
+    }
 }
