@@ -312,11 +312,28 @@ fn show_window(ui: &MainWindow, commands: &UnboundedSender<Command>) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    #[cfg(windows)]
+    log_to_file();
     let start_hidden = std::env::args().skip(1).any(|a| a == "--tray");
     let Some(instance) = claim_or_raise() else {
         return Ok(()); // the running GUI was asked to show its window
     };
     let ui = MainWindow::new()?;
+    #[cfg(windows)]
+    {
+        ui.set_lighting_available(false);
+        ui.set_show_autostart(true);
+        ui.set_autostart(masterkeys::autostart::is_enabled());
+        let weak = ui.as_weak();
+        ui.on_autostart_toggled(move |on| {
+            if let Err(e) = masterkeys::autostart::set_enabled(on)
+                && let Some(ui) = weak.upgrade()
+            {
+                ui.set_autostart(!on);
+                ui.set_error_text(e.into());
+            }
+        });
+    }
     let (event_tx, event_rx) = mpsc::channel();
     let on_event = move |event| {
         let _ = event_tx.send(event);
@@ -687,4 +704,15 @@ fn main() -> Result<(), slint::PlatformError> {
         show_window(&ui, &commands);
     }
     slint::run_event_loop_until_quit()
+}
+
+/// Windows has no terminal for this GUI: the core's log and errors go to `%APPDATA%\MasterKeys\masterkeys.log`.
+#[cfg(windows)]
+fn log_to_file() {
+    let Some(dir) = masterkeys_core::profile::ProfileStore::default_config_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("masterkeys.log");
+    let _ = masterkeys::logfile::rotate_if_big(&path, 1_048_576);
+    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
+    tracing_subscriber::fmt().with_ansi(false).with_writer(std::sync::Mutex::new(file)).init();
 }

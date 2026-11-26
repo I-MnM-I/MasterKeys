@@ -22,7 +22,8 @@ slint-build = "1.18.1"
 [target.'cfg(windows)'.dependencies]
 masterkeysd = { path = "../masterkeysd" }
 tray-icon = "0.21"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+tracing-subscriber = "0.3"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Same features as Slint's own ksni (its system-tray support), so the two unify.

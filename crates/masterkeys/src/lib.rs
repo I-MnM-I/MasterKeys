@@ -5,3 +5,5 @@ pub mod effects;
 pub mod view;
 pub mod tray;
 pub mod instance;
+pub mod autostart;
+pub mod logfile;

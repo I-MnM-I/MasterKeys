@@ -3136,6 +3136,7 @@ dependencies = [
  "steelseries-gg",
  "tempfile",
  "tokio",
+ "tracing-subscriber",
  "tray-icon",
  "windows-sys 0.59.0",
  "zbus 6.2.1",

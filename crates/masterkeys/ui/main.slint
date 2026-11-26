@@ -105,6 +105,10 @@ export component MainWindow inherits Window {
     in property <string> input-message: "";
     in property <bool> show-udev-command: false;
     in property <bool> gamesense-enabled: true;
+    /// Lighting and GameSense controls (off on Windows, where no supported keyboard is driven).
+    in property <bool> lighting-available: true;
+    in property <bool> show-autostart: false;
+    in-out property <bool> autostart: false;
     in property <[string]> macro-modes;
     in-out property <int> macro-mode: 0;
     in-out property <string> macro-count: "1";
@@ -137,6 +141,7 @@ export component MainWindow inherits Window {
     callback reset-key();
     callback select-by-press-clicked();
     callback gamesense-toggled(bool);
+    callback autostart-toggled(bool);
     callback save-macro();
 
     VerticalBox {
@@ -268,7 +273,7 @@ export component MainWindow inherits Window {
             spacing: 16px;
             vertical-stretch: 0;
 
-            GroupBox {
+            if root.lighting-available: GroupBox {
                 title: "Colour";
                 VerticalBox {
                     ColorSlot {
@@ -331,7 +336,7 @@ export component MainWindow inherits Window {
                 }
             }
 
-            GroupBox {
+            if root.lighting-available: GroupBox {
                 title: "Lighting";
                 VerticalBox {
                     HorizontalLayout {
@@ -529,6 +534,13 @@ export component MainWindow inherits Window {
             Text {
                 text: root.status-text;
                 vertical-alignment: center;
+            }
+            if root.show-autostart: CheckBox {
+                text: "Start with Windows";
+                checked <=> root.autostart;
+                toggled => {
+                    root.autostart-toggled(self.checked);
+                }
             }
             if !root.daemon-running: Button {
                 text: "Start daemon";
