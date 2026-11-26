@@ -13,8 +13,12 @@ pub struct KeyCap {
     pub w: f32,
     #[serde(default = "one")]
     pub h: f32,
-    /// Lighting zone, 0 (leftmost band) to 9.
+    /// Lighting zone, 0 (leftmost band) to 9; 0 on boards that light each key.
+    #[serde(default)]
     pub zone: u8,
+    /// Index of the key's LED in the lighting frame, on boards that light each key.
+    #[serde(default)]
+    pub led: Option<u16>,
 }
 
 fn one() -> f32 {
@@ -40,6 +44,11 @@ impl Layout {
     /// The bundled Apex 3 US ANSI layout.
     pub fn apex3_ansi() -> Layout {
         Self::parse(include_str!("../../../assets/layouts/apex3-ansi.toml")).expect("bundled layout is valid")
+    }
+
+    /// The bundled Redragon K745 PRO layout, generated from Redragon's KB.ini.
+    pub fn k745pro() -> Layout {
+        Self::parse(include_str!("../../../assets/layouts/k745pro.toml")).expect("bundled layout is valid")
     }
 
     pub fn width(&self) -> f32 {
@@ -100,6 +109,32 @@ mod tests {
         assert_eq!(l.by_code(57).unwrap().w, 6.25);
         assert!(l.width() > 22.0 && l.width() < 23.0, "{}", l.width());
         assert_eq!(l.height(), 6.5);
+    }
+
+    #[test]
+    fn k745_layout_has_unique_leds_and_esc_first() {
+        let l = Layout::k745pro();
+        assert!(l.keys.len() >= 104, "{} keys", l.keys.len());
+        let mut leds: Vec<u16> = l.keys.iter().map(|k| k.led.expect("every K745 key has an LED")).collect();
+        assert!(leds.iter().all(|&i| i < 126));
+        leds.sort();
+        leds.dedup();
+        assert_eq!(leds.len(), l.keys.len(), "LED used twice");
+        assert_eq!(l.by_code(1).unwrap().led, Some(0));
+    }
+
+    #[test]
+    fn k745_layout_codes_are_unique() {
+        let l = Layout::k745pro();
+        let mut codes: Vec<u16> = l.keys.iter().map(|k| k.code).collect();
+        codes.sort();
+        codes.dedup();
+        assert_eq!(codes.len(), l.keys.len(), "duplicate evdev codes");
+    }
+
+    #[test]
+    fn apex_layout_has_no_leds() {
+        assert!(Layout::apex3_ansi().keys.iter().all(|k| k.led.is_none()));
     }
 
     #[test]
