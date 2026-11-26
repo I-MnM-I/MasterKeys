@@ -197,7 +197,7 @@ async fn session(
     let first: StateReport = serde_json::from_str(&proxy.get_state().await?).map_err(json_error)?;
     let ids = first.devices.clone();
     report(first, &mut status);
-    sync_devices(&proxy, on_event, &mut known, ids).await?;
+    sync_devices(on_event, &mut known, ids);
     list_profiles(&proxy, on_event).await?;
     if *keys_wanted {
         proxy.subscribe_keys().await?;
@@ -211,7 +211,7 @@ async fn session(
                 let r: StateReport = serde_json::from_str(&json).map_err(json_error)?;
                 let ids = r.devices.clone();
                 report(r, &mut status);
-                sync_devices(&proxy, on_event, &mut known, ids).await?;
+                sync_devices(on_event, &mut known, ids);
             }
             signal = profile_changes.next() => {
                 if signal.is_none() { return Ok(()) }
@@ -270,20 +270,15 @@ async fn session(
     }
 }
 
-/// Fetch and report the device list when the connected ids differ from the last ones reported.
-async fn sync_devices(
-    proxy: &DaemonProxy<'_>,
-    on_event: &(impl Fn(Event) + ?Sized),
-    known: &mut Option<Vec<String>>,
-    ids: Vec<String>,
-) -> zbus::Result<()> {
+/// Report the device list when the connected ids differ from the last ones reported. Built from the ids
+/// here rather than asked for, so a daemon without `Devices` (0.2.0) still works.
+fn sync_devices(on_event: &(impl Fn(Event) + ?Sized), known: &mut Option<Vec<String>>, ids: Vec<String>) {
     if known.as_ref() == Some(&ids) {
-        return Ok(());
+        return;
     }
-    let infos: Vec<DeviceInfo> = serde_json::from_str(&proxy.devices().await?).map_err(json_error)?;
+    let infos = ids.iter().filter_map(|id| DeviceInfo::by_id(id)).collect();
     *known = Some(ids);
     on_event(Event::Devices(infos));
-    Ok(())
 }
 
 async fn next_owner_change(

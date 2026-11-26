@@ -1,5 +1,6 @@
 //! What each key in the drawing should look like.
 
+use masterkeys_core::devices::DeviceInfo;
 use masterkeys_core::layout::Layout;
 use masterkeys_core::bindings::{MAX_DELAY_MS, Macro, MacroMode, MacroStep};
 use masterkeys_core::profile::ProfileSummary;
@@ -8,14 +9,22 @@ use steelseries_gg::input::InputKey;
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::Color;
 
-/// Each key's preview colour, in layout order: its zone's colour scaled by brightness (0-100).
-pub fn key_colors(layout: &Layout, frame: &[Color], brightness: u8) -> Vec<Color> {
+/// Each key's preview colour, in layout order, scaled by brightness (0-100). `frame` has one colour per
+/// `device.leds`: on the Apex 3 a key shows its zone, elsewhere the LED under it (black if none).
+pub fn key_colors(layout: &Layout, device: &DeviceInfo, frame: &[Color], brightness: u8) -> Vec<Color> {
     let scale = f32::from(brightness.min(100)) / 100.0;
-    let zone = |z: u8| frame.get(usize::from(z).min(ZONE_COUNT - 1)).copied().unwrap_or(Color::BLACK);
-    layout.keys.iter().map(|k| zone(k.zone).scale(scale)).collect()
+    let at = |i: usize| frame.get(i).copied().unwrap_or(Color::BLACK);
+    layout
+        .keys
+        .iter()
+        .map(|k| match k.led {
+            Some(led) => device.leds.iter().position(|l| l.index == led).map_or(Color::BLACK, at),
+            None => at(usize::from(k.zone).min(ZONE_COUNT - 1)),
+        })
+        .map(|c| c.scale(scale))
+        .collect()
 }
 
-/// The key name bindings use for an evdev code, if the key can be remapped.
 pub fn key_name(code: u16) -> Option<&'static str> {
     InputKey::from_code(code).name()
 }
@@ -202,9 +211,23 @@ mod tests {
         let l = Layout::apex3_ansi();
         let mut frame = [Color::BLACK; ZONE_COUNT];
         frame[0] = Color::new(200, 100, 0);
-        let c = key_colors(&l, &frame, 50);
+        let c = key_colors(&l, &DeviceInfo::apex3(), &frame, 50);
         let esc = l.keys.iter().position(|k| k.code == 1).unwrap();
         assert_eq!(c[esc], Color::new(100, 50, 0)); // Esc is in zone 0
         assert_eq!(c.len(), l.keys.len());
+    }
+
+    #[test]
+    fn k745_keys_take_their_led_colour() {
+        let d = DeviceInfo::k745pro();
+        let l = d.layout();
+        // One frame entry per LED, in `d.leds` order; LED 0 (Esc) is lit.
+        let frame: Vec<Color> =
+            d.leds.iter().map(|led| if led.index == 0 { Color::new(200, 100, 0) } else { Color::BLACK }).collect();
+        let c = key_colors(&l, &d, &frame, 50);
+        let esc = l.keys.iter().position(|k| k.code == 1).unwrap();
+        assert_eq!(c[esc], Color::new(100, 50, 0));
+        assert_eq!(c.len(), l.keys.len());
+        assert_eq!(c.iter().filter(|&&x| x != Color::BLACK).count(), 1);
     }
 }

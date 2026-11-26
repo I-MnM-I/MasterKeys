@@ -14,6 +14,7 @@ use masterkeys_core::macro_text::{parse_text, to_text};
 use masterkeys_core::InputStatus;
 use masterkeys_core::bindings::Macro;
 use std::collections::BTreeMap;
+use masterkeys_core::devices::{APEX3_ID, DeviceInfo};
 use masterkeys_core::layout::Layout;
 use masterkeys_core::process;
 use masterkeys_core::profile::ProfileSummary;
@@ -51,6 +52,12 @@ struct App {
     state: LightingState,
     pressed: HashSet<u16>,
     selected_zone: Option<u8>,
+    /// On a per-key device, the LED of the selected key.
+    selected_led: Option<u16>,
+    /// The connected lighting devices.
+    devices: Vec<DeviceInfo>,
+    /// The keyboard picture's rows, rebuilt when the picked device changes.
+    keys_model: Rc<VecModel<KeyView>>,
     slots: [Color; 2],
     active_slot: usize,
     profiles: Vec<ProfileSummary>,
@@ -156,13 +163,25 @@ fn show_key_panel(ui: &MainWindow, app: &App) {
     ui.set_recording(app.recording);
 }
 
-/// Select a key (layout index): its zone for colours and the key for the Key panel.
+/// Select a key (layout index): its zone (or, on a per-key device, its LED) for colours and the key for
+/// the Key panel.
 fn select_key(ui: &MainWindow, app: &mut App, i: usize) {
-    let Some(zone) = app.layout.keys.get(i).map(|k| k.zone) else { return };
+    let Some(key) = app.layout.keys.get(i).cloned() else { return };
     app.selected_key = Some(i);
-    app.selected_zone = Some(zone);
-    ui.set_selected_zone(i32::from(zone));
-    let color = app.renderer.current_colors()[usize::from(zone)];
+    let shown = app.renderer.current_colors();
+    let color = match key.led {
+        Some(led) => {
+            app.selected_led = Some(led);
+            ui.set_selected_zone(i32::from(led));
+            let at = app.renderer.device().leds.iter().position(|l| l.index == led);
+            at.and_then(|p| shown.get(p).copied()).unwrap_or(Color::BLACK)
+        }
+        None => {
+            app.selected_zone = Some(key.zone);
+            ui.set_selected_zone(i32::from(key.zone));
+            shown.get(usize::from(key.zone)).copied().unwrap_or(Color::BLACK)
+        }
+    };
     app.active_slot = 0;
     ui.set_active_slot(0);
     set_slot(ui, app, 0, color);
@@ -279,13 +298,46 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
             }
         }
         Event::Error(message) => ui.set_error_text(message.into()),
-        Event::Devices(_) => {}
+        Event::Devices(list) => {
+            app.devices = list;
+            ui.set_lighting_available(!app.devices.is_empty());
+            let names: Vec<SharedString> = app.devices.iter().map(|d| d.name.as_str().into()).collect();
+            ui.set_device_names(ModelRc::new(VecModel::from(names)));
+            let current = app.renderer.device().id.clone();
+            match app.devices.iter().position(|d| d.id == current) {
+                Some(i) => ui.set_device_index(i as i32),
+                None => {
+                    // The picked device went away (or none was picked yet): take the first one there is.
+                    if let Some(first) = app.devices.first().cloned() {
+                        ui.set_device_index(0);
+                        switch_device(ui, app, &first);
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Show `device`: its keyboard picture, its preview, and nothing selected.
+fn switch_device(ui: &MainWindow, app: &mut App, device: &DeviceInfo) {
+    app.layout = device.layout();
+    app.renderer = Renderer::new(device);
+    app.renderer.set_state(&app.state);
+    ui.set_board_width(app.layout.width());
+    ui.set_board_height(app.layout.height());
+    ui.set_per_key(device.id != APEX3_ID);
+    let rows: Vec<KeyView> = app.layout.keys.iter().map(|_| KeyView::default()).collect();
+    app.keys_model.set_vec(rows);
+    app.selected_key = None;
+    app.selected_zone = None;
+    app.selected_led = None;
+    ui.set_selected_zone(-1);
+    show_key_panel(ui, app);
 }
 
 fn refresh_keys(app: &mut App, model: &VecModel<KeyView>) {
     let frame = app.renderer.frame();
-    let colors = key_colors(&app.layout, &frame, app.state.brightness);
+    let colors = key_colors(&app.layout, app.renderer.device(), &frame, app.state.brightness);
     for (i, (key, color)) in app.layout.keys.iter().zip(colors).enumerate() {
         let view = KeyView {
             x: key.x,
@@ -296,7 +348,10 @@ fn refresh_keys(app: &mut App, model: &VecModel<KeyView>) {
             color: to_slint(color),
             text_color: text_color(color),
             pressed: app.pressed.contains(&key.code),
-            selected: app.selected_zone == Some(key.zone),
+            selected: match key.led {
+                Some(led) => app.selected_led == Some(led),
+                None => app.selected_zone == Some(key.zone),
+            },
             focused: app.selected_key == Some(i),
             marked: marked(key.code, &app.remaps, &app.macros),
         };
@@ -330,9 +385,10 @@ fn main() -> Result<(), slint::PlatformError> {
         return Ok(()); // the running GUI was asked to show its window
     };
     let ui = MainWindow::new()?;
+    // Lighting shows once the core reports a connected lighting device.
+    ui.set_lighting_available(false);
     #[cfg(windows)]
     {
-        ui.set_lighting_available(false);
         ui.set_show_autostart(true);
         ui.set_autostart(masterkeys::autostart::is_enabled());
         let weak = ui.as_weak();
@@ -380,10 +436,13 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let app = Rc::new(RefCell::new(App {
         layout,
-        renderer: Renderer::new(&masterkeys_core::devices::DeviceInfo::apex3()),
+        renderer: Renderer::new(&DeviceInfo::apex3()),
         state: LightingState::default(),
         pressed: HashSet::new(),
         selected_zone: None,
+        selected_led: None,
+        devices: Vec::new(),
+        keys_model: model.clone(),
         slots: [Color::WHITE, Color::BLUE],
         active_slot: 0,
         profiles: Vec::new(),
@@ -517,9 +576,30 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     ui.on_apply_zone(move || {
         let app = a.borrow();
-        if let Some(zone) = app.selected_zone {
+        let device = app.renderer.device().id.clone();
+        if device != APEX3_ID {
+            if let Some(led) = app.selected_led {
+                app.send(Command::SetLed(device, led, app.slots[0]));
+            }
+        } else if let Some(zone) = app.selected_zone {
             app.send(Command::SetZone(zone, app.slots[0]));
         }
+    });
+
+    let weak = ui.as_weak();
+    let a = app.clone();
+    ui.on_device_selected(move |i| {
+        let (Some(ui), Ok(i)) = (weak.upgrade(), usize::try_from(i)) else { return };
+        let mut app = a.borrow_mut();
+        if let Some(device) = app.devices.get(i).cloned() {
+            switch_device(&ui, &mut app, &device);
+        }
+    });
+
+    let a = app.clone();
+    ui.on_test_flash(move || {
+        let app = a.borrow();
+        app.send(Command::TestFlash(app.renderer.device().id.clone()));
     });
 
     let a = app.clone();
@@ -700,6 +780,7 @@ fn main() -> Result<(), slint::PlatformError> {
         while let Ok(event) = event_rx.try_recv() {
             apply_event(&ui, &mut app, event);
         }
+        let model = app.keys_model.clone();
         refresh_keys(&mut app, &model);
         if let Some(tray) = &mut tray {
             tray.update(TrayModel {

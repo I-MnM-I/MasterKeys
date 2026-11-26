@@ -107,6 +107,11 @@ export component MainWindow inherits Window {
     in property <bool> gamesense-enabled: true;
     /// Lighting and GameSense controls (off on Windows, where no supported keyboard is driven).
     in property <bool> lighting-available: true;
+    /// Names of the connected lighting devices; the picker shows when there are two or more.
+    in property <[string]> device-names;
+    in-out property <int> device-index: 0;
+    /// The picked device lights each key (so a click picks a key, not a zone).
+    in property <bool> per-key: false;
     in property <bool> show-autostart: false;
     in property <string> update-text: "";
     in property <bool> can-install-update: false;
@@ -127,6 +132,8 @@ export component MainWindow inherits Window {
     callback preset-clicked(int);
     callback apply-all();
     callback apply-zone();
+    callback device-selected(int);
+    callback test-flash();
     callback brightness-released(float);
     callback effect-selected(int);
     callback speed-released(float);
@@ -355,7 +362,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         if root.selected-zone >= 0: Button {
-                            text: "Apply to zone " + root.selected-zone;
+                            text: root.per-key ? "Apply to key" : "Apply to zone " + root.selected-zone;
                             enabled: root.connected && root.slot-a-valid;
                             clicked => {
                                 root.apply-zone();
@@ -368,6 +375,31 @@ export component MainWindow inherits Window {
             if root.lighting-available: GroupBox {
                 title: "Lighting";
                 VerticalBox {
+                    if root.device-names.length >= 2: HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Device";
+                            vertical-alignment: center;
+                            width: 80px;
+                        }
+                        ComboBox {
+                            model: root.device-names;
+                            current-index <=> root.device-index;
+                            selected => {
+                                root.device-selected(self.current-index);
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        Button {
+                            text: "Test: flash red";
+                            enabled: root.connected;
+                            clicked => {
+                                root.test-flash();
+                            }
+                        }
+                    }
                     HorizontalLayout {
                         spacing: 8px;
                         Text {
