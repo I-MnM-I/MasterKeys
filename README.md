@@ -7,6 +7,10 @@ GameSense lighting from games.
 - `masterkeysd` — the daemon (systemd user service); the only process that talks to the keyboard.
 - `masterkeys` — the control panel and tray icon (`masterkeys --tray` starts in the tray).
 
+**Windows 11:** download `MasterKeys-windows.zip` from
+[Releases](https://github.com/I-MnM-I/MasterKeys/releases). On Windows it does remaps, macros, profiles
+and auto-switch with any keyboard (no lighting yet), and updates itself from the window.
+
 ## Install
 
 ```bash
@@ -39,3 +43,8 @@ Turn it off with "GameSense lighting" in the window.
 
 While a profile has remaps or macros the daemon grabs the keyboard. Holding **both Ctrls and both
 Shifts for 2 seconds** always stops remapping.
+
+## Credits
+
+`crates/steelseries-gg` is a trimmed fork of [steelseriesgg-rs](https://github.com/Ven0m0/steelseriesgg-rs)
+(MIT); see `crates/steelseries-gg/UPSTREAM.md`. MasterKeys is MIT licensed (`LICENSE`).
