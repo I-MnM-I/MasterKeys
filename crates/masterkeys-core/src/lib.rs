@@ -2,6 +2,7 @@
 
 pub mod bindings;
 pub mod dbus;
+pub mod devices;
 pub mod gszones;
 pub mod layout;
 pub mod macro_text;
