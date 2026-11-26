@@ -1,0 +1,46 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | python -c "import json,sys; print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='masterkeys'))")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match masterkeys version $version"; exit 1
+          fi
+      - run: cargo build --release -p masterkeys
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/release/masterkeys.exe README-windows.txt LICENSE dist/
+          cd dist && 7z a ../MasterKeys-windows.zip masterkeys.exe README-windows.txt LICENSE
+          cd .. && sha256sum MasterKeys-windows.zip > SHA256SUMS && cat SHA256SUMS
+      - name: Dry run artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: MasterKeys-windows
+          path: |
+            MasterKeys-windows.zip
+            SHA256SUMS
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" MasterKeys-windows.zip SHA256SUMS --generate-notes --title "MasterKeys $GITHUB_REF_NAME"
