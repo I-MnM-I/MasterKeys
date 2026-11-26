@@ -21,6 +21,12 @@ pub trait Daemon {
     async fn set_brightness(&self, percent: u8) -> zbus::Result<()>;
     /// JSON `Effect`.
     async fn set_effect(&self, effect_json: &str) -> zbus::Result<()>;
+    /// JSON list of `DeviceInfo` for the connected lighting devices.
+    async fn devices(&self) -> zbus::Result<String>;
+    /// Colour one LED of a device (on the Apex 3, an LED is a zone).
+    async fn set_led_color(&self, device: &str, led: u16, color: &str) -> zbus::Result<()>;
+    /// Show solid red on a device for 2 s, then the profile again; nothing is saved.
+    async fn test_flash(&self, device: &str) -> zbus::Result<()>;
 
     /// JSON list of `ProfileSummary`, sorted by name.
     async fn list_profiles(&self) -> zbus::Result<String>;

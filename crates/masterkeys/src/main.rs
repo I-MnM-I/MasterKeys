@@ -279,6 +279,7 @@ fn apply_event(ui: &MainWindow, app: &mut App, event: Event) {
             }
         }
         Event::Error(message) => ui.set_error_text(message.into()),
+        Event::Devices(_) => {}
     }
 }
 

@@ -56,6 +56,9 @@ pub struct StateReport {
     #[serde(flatten)]
     pub state: LightingState,
     pub connected: bool,
+    /// Ids of the connected lighting devices, sorted.
+    #[serde(default)]
+    pub devices: Vec<String>,
     /// Name of the active profile.
     #[serde(default)]
     pub profile: String,

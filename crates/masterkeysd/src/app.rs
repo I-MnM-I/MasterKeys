@@ -79,6 +79,7 @@ impl Daemon {
         tokio::spawn(run_input(core.clone(), conn.clone(), want_reader, key_tx));
         tokio::spawn(emit_keys(conn.clone(), core.keys.clone(), key_rx));
         tokio::spawn(watch_connection(conn.clone(), core.connected.clone()));
+        tokio::spawn(crate::service::watch_devices(conn.clone(), core.clone()));
         tokio::spawn(saver(store, profiles, dirty));
         if device {
             use crate::device::{apex3_opener, k745_opener};

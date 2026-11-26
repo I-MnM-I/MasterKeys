@@ -3,6 +3,7 @@
 use futures_util::StreamExt;
 use masterkeys_core::dbus::{BUS_NAME, DaemonProxy};
 use masterkeys_core::bindings::Macro;
+use masterkeys_core::devices::DeviceInfo;
 use masterkeys_core::profile::ProfileSummary;
 use masterkeys_core::{StateReport, to_hex};
 use std::collections::HashSet;
@@ -15,6 +16,10 @@ use tokio::sync::mpsc;
 pub enum Command {
     SetAll(Color),
     SetZone(u8, Color),
+    /// One LED of a device (`device` id, LED index).
+    SetLed(String, u16, Color),
+    /// Solid red on a device for 2 s.
+    TestFlash(String),
     SetBrightness(u8),
     SetEffect(Effect),
     ActivateProfile(String),
@@ -60,6 +65,8 @@ pub enum Event {
     /// The lighting, active profile, its bindings and what the daemon does with the keys.
     State(Box<StateReport>),
     Profiles(Vec<ProfileSummary>),
+    /// The connected lighting devices, whenever that set changes.
+    Devices(Vec<DeviceInfo>),
     /// The daemon's recording, after `StopRecording`.
     Recorded(Macro),
     Key(u16, bool),
@@ -186,7 +193,11 @@ async fn session(
         }
         on_event(Event::State(Box::new(r)));
     };
-    report(serde_json::from_str(&proxy.get_state().await?).map_err(json_error)?, &mut status);
+    let mut known: Option<Vec<String>> = None;
+    let first: StateReport = serde_json::from_str(&proxy.get_state().await?).map_err(json_error)?;
+    let ids = first.devices.clone();
+    report(first, &mut status);
+    sync_devices(&proxy, on_event, &mut known, ids).await?;
     list_profiles(&proxy, on_event).await?;
     if *keys_wanted {
         proxy.subscribe_keys().await?;
@@ -197,7 +208,10 @@ async fn session(
             signal = states.next() => {
                 let Some(signal) = signal else { return Ok(()) };
                 let json = signal.args()?.state_json;
-                report(serde_json::from_str(&json).map_err(json_error)?, &mut status);
+                let r: StateReport = serde_json::from_str(&json).map_err(json_error)?;
+                let ids = r.devices.clone();
+                report(r, &mut status);
+                sync_devices(&proxy, on_event, &mut known, ids).await?;
             }
             signal = profile_changes.next() => {
                 if signal.is_none() { return Ok(()) }
@@ -256,6 +270,22 @@ async fn session(
     }
 }
 
+/// Fetch and report the device list when the connected ids differ from the last ones reported.
+async fn sync_devices(
+    proxy: &DaemonProxy<'_>,
+    on_event: &(impl Fn(Event) + ?Sized),
+    known: &mut Option<Vec<String>>,
+    ids: Vec<String>,
+) -> zbus::Result<()> {
+    if known.as_ref() == Some(&ids) {
+        return Ok(());
+    }
+    let infos: Vec<DeviceInfo> = serde_json::from_str(&proxy.devices().await?).map_err(json_error)?;
+    *known = Some(ids);
+    on_event(Event::Devices(infos));
+    Ok(())
+}
+
 async fn next_owner_change(
     stream: &mut Option<zbus::fdo::NameOwnerChangedStream>,
 ) -> Option<zbus::fdo::NameOwnerChanged> {
@@ -275,6 +305,8 @@ async fn send(proxy: &DaemonProxy<'_>, command: Command) -> zbus::Result<()> {
     match command {
         Command::SetAll(color) => proxy.set_all_color(&to_hex(color)).await,
         Command::SetZone(zone, color) => proxy.set_zone_color(zone, &to_hex(color)).await,
+        Command::SetLed(device, led, color) => proxy.set_led_color(&device, led, &to_hex(color)).await,
+        Command::TestFlash(device) => proxy.test_flash(&device).await,
         Command::SetBrightness(percent) => proxy.set_brightness(percent).await,
         Command::SetEffect(effect) => proxy.set_effect(&serde_json::to_string(&effect).map_err(json_error)?).await,
         Command::ActivateProfile(name) => proxy.activate_profile(&name).await,

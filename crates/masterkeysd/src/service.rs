@@ -4,6 +4,7 @@ use crate::keys::{KeyHub, P2P_PEER};
 use crate::profiles::{ProfileError, Profiles};
 use masterkeys_core::dbus::OBJECT_PATH;
 use masterkeys_core::bindings::{Compiled, Macro, compile};
+use masterkeys_core::devices::{APEX3_ID, DeviceInfo};
 use masterkeys_core::profile::ProfileSummary;
 use masterkeys_core::render::Renderer;
 use masterkeys_core::{GameSenseStatus, InputStatus, LightingState, StateReport, parse_hex};
@@ -59,6 +60,9 @@ pub struct DaemonCore {
     pub gamesense: Arc<watch::Sender<GameSenseStatus>>,
 }
 
+/// How long `TestFlash` shows red.
+const FLASH_TIME: Duration = Duration::from_secs(2);
+
 /// How long a macro recording takes keys before it stops by itself.
 const RECORDING_LIMIT: Duration = Duration::from_secs(60);
 
@@ -72,6 +76,7 @@ impl DaemonCore {
         let report = StateReport {
             state: self.state.borrow().clone(),
             connected: *self.connected.borrow(),
+            devices: self.devices.borrow().iter().cloned().collect(),
             profile,
             remaps,
             macros,
@@ -247,6 +252,64 @@ impl DaemonService {
         let mut colors = self.shown_colors();
         colors[zone] = color;
         self.apply(self.with_effect(Effect::Custom { colors }), &emitter).await
+    }
+
+    /// JSON list of `DeviceInfo` for the connected lighting devices.
+    fn devices(&self) -> String {
+        let infos: Vec<DeviceInfo> = self.core.devices.borrow().iter().filter_map(|id| DeviceInfo::by_id(id)).collect();
+        serde_json::to_string(&infos).expect("device infos serialize")
+    }
+
+    /// Colour one LED of a device. On the Apex 3 an LED is a zone; on other devices it is a key's LED,
+    /// kept in the per-key colours. Starts from the colours shown if the effect is not already Custom.
+    async fn set_led_color(
+        &self,
+        device: &str,
+        led: u16,
+        color: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), ServiceError> {
+        let info = DeviceInfo::by_id(device).ok_or_else(|| invalid(format!("unknown device {device:?}")))?;
+        if !info.leds.iter().any(|l| l.index == led) {
+            return Err(invalid(format!("{} has no LED {led}", info.name)));
+        }
+        let color = parse_hex(color).map_err(invalid)?;
+        let mut candidate = self.core.state.borrow().clone();
+        let mut colors = match &candidate.effect {
+            Effect::Custom { colors } => colors.clone(),
+            _ => self.shown_colors(),
+        };
+        if info.id == APEX3_ID {
+            colors[usize::from(led)] = color;
+        } else {
+            candidate.custom.entry(info.id).or_default().insert(led, color);
+        }
+        candidate.effect = Effect::Custom { colors };
+        self.apply(candidate, &emitter).await
+    }
+
+    /// Show solid red on `device` for 2 s, then the active profile's lighting. Not saved, not announced.
+    async fn test_flash(&self, device: &str) -> Result<(), ServiceError> {
+        let info = DeviceInfo::by_id(device).ok_or_else(|| invalid(format!("unknown device {device:?}")))?;
+        let mut flash = self.core.state.borrow().clone();
+        let mut colors = match &flash.effect {
+            Effect::Custom { colors } => colors.clone(),
+            _ => self.shown_colors(),
+        };
+        if info.id == APEX3_ID {
+            colors = vec![Color::RED; ZONE_COUNT];
+        } else {
+            flash.custom.insert(info.id.clone(), info.leds.iter().map(|l| (l.index, Color::RED)).collect());
+        }
+        flash.effect = Effect::Custom { colors };
+        self.core.state.send_replace(flash);
+        let core = self.core.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(FLASH_TIME).await;
+            let lighting = core.profiles.lock().unwrap().active().lighting.clone();
+            core.state.send_replace(lighting);
+        });
+        Ok(())
     }
 
     async fn set_brightness(
@@ -431,4 +494,13 @@ pub async fn watch_connection(conn: zbus::Connection, mut connected: watch::Rece
         DaemonService::device_connected(&emitter, now).await?;
     }
     Ok(())
+}
+
+/// Emit `StateChanged` whenever the set of connected lighting devices changes.
+pub async fn watch_devices(conn: zbus::Connection, core: DaemonCore) {
+    let mut devices = core.devices.clone();
+    while devices.changed().await.is_ok() {
+        devices.borrow_and_update();
+        core.announce(&conn, false).await;
+    }
 }

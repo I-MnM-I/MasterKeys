@@ -7,6 +7,8 @@ use masterkeys_core::profile::ProfileStore;
 use masterkeysd::keys::{KeyHub, emit_keys};
 use masterkeysd::persist::{load_profiles, saver};
 use masterkeysd::service::{DaemonCore, DaemonService};
+use masterkeys_core::devices::DeviceInfo;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
@@ -18,6 +20,7 @@ struct Served {
     proxy: DaemonProxy<'static>,
     state: watch::Receiver<LightingState>,
     connected: watch::Sender<bool>,
+    devices: watch::Sender<BTreeSet<String>>,
     frame: Arc<Mutex<Vec<Color>>>,
     keys: mpsc::Sender<(u16, bool)>,
     want_reader: watch::Receiver<bool>,
@@ -40,6 +43,7 @@ async fn serve_in(config: &Path) -> Served {
     let (profiles, _warnings) = load_profiles(&store);
     let (state_tx, state_rx) = watch::channel(profiles.active().lighting.clone());
     let (connected_tx, connected_rx) = watch::channel(false);
+    let (devices_tx, devices_rx) = watch::channel(BTreeSet::new());
     let frame = Arc::new(Mutex::new(vec![Color::WHITE; ZONE_COUNT]));
     let (hub, want_reader) = KeyHub::new();
     let (keys_tx, keys_rx) = mpsc::channel(16);
@@ -49,7 +53,7 @@ async fn serve_in(config: &Path) -> Served {
     let core = DaemonCore {
         state: Arc::new(state_tx),
         connected: connected_rx,
-        devices: tokio::sync::watch::channel(Default::default()).1,
+        devices: devices_rx,
         frame: frame.clone(),
         keys: hub.clone(),
         profiles,
@@ -65,8 +69,9 @@ async fn serve_in(config: &Path) -> Served {
     let service = DaemonService::new(core.clone());
     let (server, client) = masterkeysd::p2p::pair(service).await.unwrap();
     tokio::spawn(emit_keys(server.clone(), hub, keys_rx));
+    tokio::spawn(masterkeysd::service::watch_devices(server.clone(), core.clone()));
     let proxy = DaemonProxy::new(&client).await.unwrap();
-    Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, bindings, core: core_handle, server, _config: None }
+    Served { proxy, state: state_rx, connected: connected_tx, devices: devices_tx, frame, keys: keys_tx, want_reader, bindings, core: core_handle, server, _config: None }
 }
 
 async fn report(s: &Served) -> StateReport {
@@ -386,4 +391,76 @@ async fn gamesense_reports_active_game() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(overlay_rx.borrow().iter().all(Option::is_none), "ignored while disabled");
     assert_eq!(report(&s).await.gamesense.game, None);
+}
+
+fn plug(s: &Served, ids: &[&str]) {
+    s.devices.send_replace(ids.iter().map(|i| i.to_string()).collect());
+}
+
+#[tokio::test]
+async fn devices_lists_connected_infos() {
+    let s = serve().await;
+    assert!(report(&s).await.devices.is_empty());
+    plug(&s, &["k745pro", "apex3"]);
+    assert_eq!(report(&s).await.devices, vec!["apex3".to_string(), "k745pro".to_string()]);
+    let infos: Vec<DeviceInfo> = serde_json::from_str(&s.proxy.devices().await.unwrap()).unwrap();
+    assert_eq!(infos, vec![DeviceInfo::apex3(), DeviceInfo::k745pro()]);
+}
+
+#[tokio::test]
+async fn state_changed_on_device_change() {
+    let s = serve().await;
+    let mut changes = s.proxy.receive_state_changed().await.unwrap();
+    plug(&s, &["k745pro"]);
+    let signal = tokio::time::timeout(Duration::from_secs(2), changes.next()).await.unwrap().unwrap();
+    let r: StateReport = serde_json::from_str(&signal.args().unwrap().state_json).unwrap();
+    assert_eq!(r.devices, vec!["k745pro".to_string()]);
+}
+
+#[tokio::test]
+async fn led_colour_keeps_apex_colours() {
+    let s = serve().await;
+    s.proxy.set_effect(r#"{"Spectrum":{"speed":1.0}}"#).await.unwrap();
+    let shown: Vec<Color> = (0..10).map(|i| Color::new(i * 10, 1, 2)).collect();
+    *s.frame.lock().unwrap() = shown.clone();
+    s.proxy.set_led_color("k745pro", 0, "ff0000").await.unwrap();
+    let state = s.state.borrow().clone();
+    assert_eq!(state.effect, Effect::Custom { colors: shown });
+    assert_eq!(state.custom["k745pro"], BTreeMap::from([(0u16, Color::RED)]));
+    // On the Apex 3, an LED is a zone.
+    s.proxy.set_led_color("apex3", 2, "0000ff").await.unwrap();
+    let Effect::Custom { colors } = s.state.borrow().effect.clone() else { panic!("not custom") };
+    assert_eq!(colors[2], Color::BLUE);
+}
+
+#[tokio::test]
+async fn led_colour_rejects_unknown_device_and_led() {
+    let s = serve().await;
+    assert!(s.proxy.set_led_color("nope", 0, "ff0000").await.is_err());
+    assert!(s.proxy.set_led_color("k745pro", 125, "ff0000").await.is_err(), "125 is not a K745 key LED");
+    assert!(s.proxy.set_led_color("apex3", 10, "ff0000").await.is_err());
+}
+
+#[tokio::test]
+async fn test_flash_restores_after_two_seconds() {
+    let s = serve().await;
+    s.proxy.set_all_color("00ff00").await.unwrap();
+    s.proxy.test_flash("k745pro").await.unwrap();
+    let flashing = s.state.borrow().clone();
+    let leds = DeviceInfo::k745pro().leds;
+    assert!(matches!(flashing.effect, Effect::Custom { .. }));
+    assert_eq!(flashing.custom["k745pro"].len(), leds.len());
+    assert!(flashing.custom["k745pro"].values().all(|c| *c == Color::RED));
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    assert_eq!(s.state.borrow().effect, Effect::Static { color: Color::GREEN });
+}
+
+#[tokio::test]
+async fn test_flash_is_not_saved() {
+    let s = serve().await;
+    s.proxy.set_all_color("00ff00").await.unwrap();
+    s.proxy.test_flash("apex3").await.unwrap();
+    let profile = s.core.profiles.lock().unwrap().active().lighting.clone();
+    assert_eq!(profile.effect, Effect::Static { color: Color::GREEN });
+    assert!(s.proxy.test_flash("nope").await.is_err());
 }
