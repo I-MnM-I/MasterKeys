@@ -1,24 +1,49 @@
 //! masterkeysd: owns the SteelSeries Apex 3 and serves lighting control on the session bus.
 
+#[cfg(target_os = "linux")]
 use masterkeys_core::dbus::{BUS_NAME, OBJECT_PATH};
+#[cfg(target_os = "linux")]
 use masterkeys_core::profile::ProfileStore;
+#[cfg(target_os = "linux")]
 use masterkeysd::device::apex3_opener;
+#[cfg(target_os = "linux")]
 use masterkeysd::gamesense::run_gamesense;
+#[cfg(target_os = "linux")]
 use masterkeysd::input::run_input;
+#[cfg(target_os = "linux")]
 use masterkeysd::keys::{KeyHub, drop_vanished, emit_keys};
+#[cfg(target_os = "linux")]
 use masterkeysd::output::{self, Backoff, Shared};
+#[cfg(target_os = "linux")]
 use masterkeysd::persist::{flush, load_profiles, saver, watcher};
+#[cfg(target_os = "linux")]
 use masterkeysd::service::{DaemonCore, DaemonService, watch_connection};
+#[cfg(target_os = "linux")]
 use std::process::ExitCode;
+#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use steelseries_gg::apex3::ZONE_COUNT;
+#[cfg(target_os = "linux")]
 use steelseries_gg::rgb::Color;
+#[cfg(target_os = "linux")]
 use tokio::signal::unix::{SignalKind, signal};
+#[cfg(target_os = "linux")]
 use tokio::sync::watch;
+#[cfg(target_os = "linux")]
 use tracing::{error, info, warn};
+#[cfg(target_os = "linux")]
 use tracing_subscriber::EnvFilter;
+#[cfg(target_os = "linux")]
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 
+#[cfg(not(target_os = "linux"))]
+fn main() -> std::process::ExitCode {
+    eprintln!("masterkeysd is the Linux service; on Windows run masterkeys.exe");
+    std::process::ExitCode::FAILURE
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()

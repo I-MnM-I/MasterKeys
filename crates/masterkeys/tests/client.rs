@@ -2,18 +2,15 @@
 
 use masterkeys::client::{Command, Event, Status, run_on};
 use masterkeys_core::LightingState;
-use masterkeys_core::dbus::OBJECT_PATH;
 use masterkeysd::keys::{KeyHub, emit_keys};
 use masterkeys_core::profile::ProfileStore;
 use masterkeysd::persist::load_profiles;
 use masterkeysd::service::{DaemonCore, DaemonService};
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::{Color, Effect};
 use tokio::sync::{mpsc, watch};
-use zbus::{Guid, connection::Builder};
 
 struct Harness {
     events: mpsc::UnboundedReceiver<Event>,
@@ -48,11 +45,7 @@ async fn start() -> Harness {
     core.gamesense.send_modify(|g| g.enabled = core.profiles.lock().unwrap().gamesense_enabled());
     core.refresh_bindings();
     let service = DaemonService::new(core);
-    let (a, b) = UnixStream::pair().unwrap();
-    let server = Builder::unix_stream(a).server(Guid::generate()).p2p().serve_at(OBJECT_PATH, service);
-    let client = Builder::unix_stream(b).p2p();
-    let (server, client) = tokio::join!(server.build(), client.build());
-    let (server, client) = (server.unwrap(), client.unwrap());
+    let (server, client) = masterkeysd::p2p::pair(service).await.unwrap();
     tokio::spawn(emit_keys(server.clone(), hub, keys_rx));
 
     let (event_tx, events) = mpsc::unbounded_channel();

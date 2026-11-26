@@ -217,12 +217,16 @@ fn canonical_remaps(remaps: BTreeMap<String, String>) -> BTreeMap<String, String
 /// Write via a 0600 temp file and rename, so a crash never leaves half a file.
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("toml.tmp");
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    // On Windows the file inherits %APPDATA%'s per-user access.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&tmp)?;
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     std::fs::rename(&tmp, path)
@@ -232,7 +236,6 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::LightingState;
-    use std::os::unix::fs::PermissionsExt;
     use steelseries_gg::rgb::{Color, Effect};
 
     fn custom(name: &str) -> Profile {
@@ -365,8 +368,10 @@ mod tests {
         assert_eq!(profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["c"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn saves_are_private_files() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let store = ProfileStore::new(dir.path());
         store.save(&custom("a")).unwrap();

@@ -13,6 +13,7 @@ use steelseries_gg::rgb::Color;
 /// The port tried first, so coreProps.json stays valid across restarts.
 pub const PORT: u16 = 51340;
 /// How often coreProps.json is refreshed (new Proton prefixes appear when games first run).
+#[cfg(target_os = "linux")]
 const COREPROPS_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Serve GameSense on 127.0.0.1, publish its address, and colour zones from game events.
@@ -41,7 +42,9 @@ pub async fn run_gamesense(core: DaemonCore, conn: zbus::Connection, overlay_tx:
             warn!("GameSense server stopped: {e}");
         }
     });
+    #[cfg(target_os = "linux")]
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    #[cfg(target_os = "linux")]
     tokio::spawn(async move {
         loop {
             let warnings = match &home {

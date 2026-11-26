@@ -8,7 +8,6 @@ use futures_util::StreamExt;
 use masterkeys_core::dbus::OBJECT_PATH;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
-use steelseries_gg::STEELSERIES_VENDOR_ID;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use zbus::names::BusName;
@@ -70,58 +69,6 @@ impl Subscribers {
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
-}
-
-/// Read the Apex 3's key events (no grab) until `stop` turns true or a device fails, sending transitions.
-/// Always ends by releasing any keys still held.
-pub async fn read_keys(events: mpsc::Sender<(u16, bool)>, mut stop: watch::Receiver<bool>) {
-    let (raw_tx, mut raw_rx) = mpsc::channel::<(u16, i32)>(256);
-    let mut readers = Vec::new();
-    for (path, device) in evdev::enumerate() {
-        let id = device.input_id();
-        if id.vendor() != STEELSERIES_VENDOR_ID || id.product() != APEX3_PRODUCT || device.supported_keys().is_none() {
-            continue;
-        }
-        let mut stream = match device.into_event_stream() {
-            Ok(stream) => stream,
-            Err(e) => {
-                warn!("cannot read keys from {}: {e}", path.display());
-                continue;
-            }
-        };
-        let raw_tx = raw_tx.clone();
-        readers.push(tokio::spawn(async move {
-            while let Ok(event) = stream.next_event().await {
-                if event.event_type() == evdev::EventType::KEY && raw_tx.send((event.code(), event.value())).await.is_err() {
-                    break;
-                }
-            }
-        }));
-    }
-    drop(raw_tx);
-    info!("key reader started ({} input devices)", readers.len());
-
-    let mut tracker = PressTracker::new();
-    loop {
-        tokio::select! {
-            raw = raw_rx.recv() => match raw {
-                Some((code, value)) => {
-                    if let Some(transition) = tracker.feed(code, value) {
-                        let _ = events.send(transition).await;
-                    }
-                }
-                None => break, // every device stream ended (unplugged)
-            },
-            _ = async { let _ = stop.wait_for(|stop| *stop).await; } => break,
-        }
-    }
-    for reader in readers {
-        reader.abort();
-    }
-    for transition in tracker.release_all() {
-        let _ = events.send(transition).await;
-    }
-    info!("key reader stopped");
 }
 
 /// Name used for the single peer of a peer-to-peer connection, which has no bus names.
@@ -253,7 +200,7 @@ pub async fn emit_keys(conn: zbus::Connection, hub: KeyHub, mut events: mpsc::Re
 
 /// Run the key reader whenever `want` is true, stopping it when it turns false.
 pub async fn run_reader(want: watch::Receiver<bool>, connected: watch::Receiver<bool>, events: mpsc::Sender<(u16, bool)>) {
-    run_reader_with(want, connected, move |stop| read_keys(events.clone(), stop)).await
+    run_reader_with(want, connected, move |stop| crate::input::backend::read_keys(events.clone(), stop)).await
 }
 
 /// `run_reader` with the reader injected, for tests.

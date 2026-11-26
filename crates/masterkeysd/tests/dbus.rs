@@ -1,7 +1,7 @@
 //! The D-Bus interface, served over a private peer-to-peer connection (no session bus needed).
 
 use futures_util::StreamExt;
-use masterkeys_core::dbus::{DaemonProxy, OBJECT_PATH};
+use masterkeys_core::dbus::DaemonProxy;
 use masterkeys_core::{LightingState, StateReport};
 use masterkeys_core::profile::ProfileStore;
 use masterkeysd::keys::{KeyHub, emit_keys};
@@ -9,12 +9,10 @@ use masterkeysd::persist::{load_profiles, saver};
 use masterkeysd::service::{DaemonCore, DaemonService};
 use std::path::Path;
 use std::time::Duration;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::{Color, Effect};
 use tokio::sync::{mpsc, watch};
-use zbus::{Guid, connection::Builder};
 
 struct Served {
     proxy: DaemonProxy<'static>,
@@ -64,11 +62,7 @@ async fn serve_in(config: &Path) -> Served {
     let bindings = core.bindings.subscribe();
     let core_handle = core.clone();
     let service = DaemonService::new(core.clone());
-    let (a, b) = UnixStream::pair().unwrap();
-    let server = Builder::unix_stream(a).server(Guid::generate()).p2p().serve_at(OBJECT_PATH, service);
-    let client = Builder::unix_stream(b).p2p();
-    let (server, client) = tokio::join!(server.build(), client.build());
-    let (server, client) = (server.unwrap(), client.unwrap());
+    let (server, client) = masterkeysd::p2p::pair(service).await.unwrap();
     tokio::spawn(emit_keys(server.clone(), hub, keys_rx));
     let proxy = DaemonProxy::new(&client).await.unwrap();
     Served { proxy, state: state_rx, connected: connected_tx, frame, keys: keys_tx, want_reader, bindings, core: core_handle, server, _config: None }
