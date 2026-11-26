@@ -44,6 +44,8 @@ pub struct DaemonCore {
     /// What the output loop shows; always the active profile's lighting.
     pub state: Arc<watch::Sender<LightingState>>,
     pub connected: watch::Receiver<bool>,
+    /// Ids of the connected lighting devices.
+    pub devices: watch::Receiver<std::collections::BTreeSet<String>>,
     pub frame: Arc<Mutex<Vec<Color>>>,
     pub keys: KeyHub,
     pub profiles: Arc<Mutex<Profiles>>,

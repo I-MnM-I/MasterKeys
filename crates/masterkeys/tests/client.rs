@@ -34,6 +34,7 @@ async fn start() -> Harness {
     let core = DaemonCore {
         state: Arc::new(state_tx),
         connected: connected_rx,
+        devices: tokio::sync::watch::channel(Default::default()).1,
         frame,
         keys: hub.clone(),
         profiles: Arc::new(Mutex::new(profiles)),

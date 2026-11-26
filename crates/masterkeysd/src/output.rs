@@ -1,11 +1,12 @@
 //! Owns the keyboard: connects, reconnects with backoff, and sends frames as the state changes.
 
 use crate::device::{Lighting, Opener};
-use masterkeys_core::render::Renderer;
 use masterkeys_core::LightingState;
+use masterkeys_core::devices::DeviceInfo;
+use masterkeys_core::render::Renderer;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::Color;
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -13,15 +14,16 @@ use tracing::{info, warn};
 /// How often static lighting is re-sent.
 pub const KEEPALIVE: Duration = Duration::from_secs(2);
 
-/// Channels between the output loop and the D-Bus service.
+/// Channels between one device's output loop and the rest of the daemon.
 pub struct Shared {
     /// Latest wanted state; a watch keeps only the newest value, so bursts coalesce.
     pub state: watch::Receiver<LightingState>,
-    pub connected: watch::Sender<bool>,
-    /// The frame last sent, for `SetZoneColor`.
-    pub frame: Arc<Mutex<Vec<Color>>>,
-    /// GameSense colours laid over the frame (zones that are `None` show the profile).
-    pub overlay: watch::Receiver<crate::gamesense::OverlayFrame>,
+    /// Ids of the connected devices: each loop adds its own on connect and removes it when a write fails.
+    pub devices: watch::Sender<BTreeSet<String>>,
+    /// The frame last sent, for `SetZoneColor` (the Apex 3 only).
+    pub frame: Option<Arc<Mutex<Vec<Color>>>>,
+    /// GameSense colours laid over the frame (the Apex 3 only; zones that are `None` show the profile).
+    pub overlay: Option<watch::Receiver<crate::gamesense::OverlayFrame>>,
 }
 
 /// Reconnect delays: start at `initial`, double after each failed open, stop at `max`.
@@ -33,32 +35,38 @@ pub struct Backoff {
 
 impl Backoff {
     pub const DEFAULT: Backoff = Backoff { initial: Duration::from_secs(1), max: Duration::from_secs(10) };
+    /// How often an absent device is looked for again.
+    pub const SCAN: Backoff = Backoff { initial: Duration::from_secs(1), max: Duration::from_secs(3) };
 }
 
-/// Run forever: keep the keyboard showing the wanted state.
-pub async fn run(mut opener: Opener, mut shared: Shared, backoff: Backoff) {
-    let mut renderer = Renderer::new(&masterkeys_core::devices::DeviceInfo::apex3());
+/// Run forever: keep `device` showing the wanted state whenever it is plugged in.
+pub async fn run(mut opener: Opener, device: DeviceInfo, mut shared: Shared, backoff: Backoff) {
+    let mut renderer = Renderer::new(&device);
     loop {
-        let mut device = connect(&mut opener, backoff).await;
-        shared.connected.send_replace(true);
-        info!("keyboard connected");
-        let error = drive(device.as_mut(), &mut renderer, &mut shared).await;
-        shared.connected.send_replace(false);
-        warn!("keyboard write failed, reconnecting: {error}");
-        // Pause before reopening, so a board that opens but rejects writes can't spin this loop.
+        let mut lighting = connect(&mut opener, &device, backoff).await;
+        shared.devices.send_modify(|d| {
+            d.insert(device.id.clone());
+        });
+        info!("{} connected", device.name);
+        let error = drive(lighting.as_mut(), &mut renderer, &mut shared).await;
+        shared.devices.send_modify(|d| {
+            d.remove(&device.id);
+        });
+        warn!("{} write failed, reconnecting: {error}", device.name);
+        // Pause before reopening, so a device that opens but rejects writes can't spin this loop.
         tokio::time::sleep(backoff.initial).await;
     }
 }
 
-async fn connect(opener: &mut Opener, backoff: Backoff) -> Box<dyn Lighting> {
+async fn connect(opener: &mut Opener, device: &DeviceInfo, backoff: Backoff) -> Box<dyn Lighting> {
     let mut delay = backoff.initial;
     let mut reported = false;
     loop {
         match opener() {
-            Ok(device) => return device,
+            Ok(lighting) => return lighting,
             Err(e) => {
                 if !reported {
-                    info!("waiting for keyboard: {e}");
+                    info!("waiting for {}: {e}", device.name);
                     reported = true;
                 }
                 tokio::time::sleep(delay).await;
@@ -72,20 +80,26 @@ async fn connect(opener: &mut Opener, backoff: Backoff) -> Box<dyn Lighting> {
 async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut Shared) -> steelseries_gg::Error {
     let mut state = shared.state.borrow_and_update().clone();
     renderer.set_state(&state);
-    // False once GameSense went away; then the overlay is never waited on again.
-    let mut overlay_alive = true;
+    // False once GameSense went away (or for devices without it); then the overlay is never waited on.
+    let mut overlay_alive = shared.overlay.is_some();
     if let Err(e) = device.set_brightness(state.brightness) {
         return e;
     }
     loop {
         let frame = renderer.frame();
-        let overlay = *shared.overlay.borrow_and_update();
-        let shown: [Color; ZONE_COUNT] =
-            std::array::from_fn(|i| overlay[i].unwrap_or(frame.get(i).copied().unwrap_or(Color::BLACK)));
+        let shown: Vec<Color> = match &mut shared.overlay {
+            Some(overlay) => {
+                let overlay = *overlay.borrow_and_update();
+                frame.iter().enumerate().map(|(i, c)| overlay.get(i).copied().flatten().unwrap_or(*c)).collect()
+            }
+            None => frame.clone(),
+        };
         if let Err(e) = device.write(&shown) {
             return e;
         }
-        *shared.frame.lock().unwrap() = frame;
+        if let Some(sent) = &shared.frame {
+            *sent.lock().unwrap() = frame;
+        }
 
         // Static lighting is re-sent as a keepalive: it notices an unplug (the write fails) and restores the
         // colours if the board reset itself.
@@ -102,13 +116,14 @@ async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut 
                 {
                     return e;
                 }
-                if new.effect != state.effect {
-                    renderer.set_state(&new);
-                }
+                renderer.set_state(&new);
                 state = new;
             }
             changed = async {
-                if overlay_alive { shared.overlay.changed().await } else { std::future::pending().await }
+                match (&mut shared.overlay, overlay_alive) {
+                    (Some(overlay), true) => overlay.changed().await,
+                    _ => std::future::pending().await,
+                }
             } => {
                 if changed.is_err() {
                     // GameSense is gone: keep following the profile, never wake for the overlay again.
@@ -136,6 +151,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use steelseries_gg::apex3::ZONE_COUNT;
+    use masterkeys_core::devices::{APEX3_ID, DeviceInfo, K745_ID};
+    use std::collections::BTreeSet;
     use steelseries_gg::rgb::{Color, Effect};
     use tokio::sync::watch;
 
@@ -179,7 +196,7 @@ mod tests {
         calls: Arc<Mutex<Vec<Call>>>,
         opens: Arc<AtomicUsize>,
         state: watch::Sender<LightingState>,
-        connected: watch::Receiver<bool>,
+        devices: watch::Receiver<BTreeSet<String>>,
         overlay: watch::Sender<crate::gamesense::OverlayFrame>,
         frame: Arc<Mutex<Vec<Color>>>,
     }
@@ -191,6 +208,9 @@ mod tests {
         fn count(&self, pred: impl Fn(&Call) -> bool) -> usize {
             self.calls().iter().filter(|c| pred(c)).count()
         }
+        fn connected(&self) -> bool {
+            self.devices.borrow().contains(APEX3_ID)
+        }
     }
 
     /// Start the loop; opening fails `fail_opens` times first, and write number `fail_at` fails.
@@ -199,7 +219,7 @@ mod tests {
         let opens = Arc::new(AtomicUsize::new(0));
         let writes = Arc::new(AtomicUsize::new(0));
         let (state_tx, state_rx) = watch::channel(LightingState::default());
-        let (connected_tx, connected_rx) = watch::channel(false);
+        let (devices_tx, devices_rx) = watch::channel(BTreeSet::new());
         let (c, o, w) = (calls.clone(), opens.clone(), writes.clone());
         let opener: Opener = Box::new(move || {
             if o.fetch_add(1, Ordering::SeqCst) < fail_opens {
@@ -209,9 +229,51 @@ mod tests {
         });
         let (overlay_tx, overlay_rx) = watch::channel([None; ZONE_COUNT]);
         let frame = Arc::new(Mutex::new(vec![Color::BLACK; ZONE_COUNT]));
-        let shared = Shared { state: state_rx, connected: connected_tx, frame: frame.clone(), overlay: overlay_rx };
-        tokio::spawn(run(opener, shared, Backoff::DEFAULT));
-        Harness { calls, opens, state: state_tx, connected: connected_rx, overlay: overlay_tx, frame }
+        let shared =
+            Shared { state: state_rx, devices: devices_tx, frame: Some(frame.clone()), overlay: Some(overlay_rx) };
+        tokio::spawn(run(opener, DeviceInfo::apex3(), shared, Backoff::DEFAULT));
+        Harness { calls, opens, state: state_tx, devices: devices_rx, overlay: overlay_tx, frame }
+    }
+
+    /// A fake for `info` whose write number `fail_at` fails, recording into `calls`.
+    fn fake_opener(info: DeviceInfo, calls: Arc<Mutex<Vec<Call>>>, fail_at: usize) -> Opener {
+        let writes = Arc::new(AtomicUsize::new(0));
+        Box::new(move || {
+            Ok(Box::new(Fake { calls: calls.clone(), writes: writes.clone(), fail_at, info: info.clone() })
+                as Box<dyn Lighting>)
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_device_failing_leaves_the_other_running() {
+        let (state_tx, state_rx) = watch::channel(LightingState::default());
+        let (devices_tx, mut devices) = watch::channel(BTreeSet::new());
+        let (apex_calls, k745_calls) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+        let apex = Shared { state: state_rx.clone(), devices: devices_tx.clone(), frame: None, overlay: None };
+        let k745 = Shared { state: state_rx, devices: devices_tx, frame: None, overlay: None };
+        tokio::spawn(run(fake_opener(DeviceInfo::apex3(), apex_calls.clone(), 3), DeviceInfo::apex3(), apex, Backoff::SCAN));
+        tokio::spawn(run(fake_opener(DeviceInfo::k745pro(), k745_calls.clone(), 0), DeviceInfo::k745pro(), k745, Backoff::SCAN));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        state_tx.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, ..Default::default() });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let leds = DeviceInfo::k745pro().leds.len();
+        assert_eq!(k745_calls.lock().unwrap().last(), Some(&Call::Zones(vec![Color::RED; leds])));
+        assert!(devices.borrow_and_update().contains(K745_ID));
+        // The Apex 3 fake failed its 3rd write; it is dropped, then found again by the next scan.
+        tokio::time::sleep(Backoff::SCAN.max * 2).await;
+        let now = devices.borrow_and_update().clone();
+        assert!(now.contains(APEX3_ID) && now.contains(K745_ID), "{now:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn brightness_change_rewrites_the_frame() {
+        let h = start(0, 0);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        h.state.send_replace(LightingState { brightness: 40, ..Default::default() });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let calls = h.calls();
+        let b = calls.iter().rposition(|c| *c == Call::Brightness(40)).expect("brightness sent");
+        assert!(calls[b + 1..].iter().any(|c| matches!(c, Call::Zones(_))), "{calls:?}");
     }
 
     #[tokio::test]
@@ -252,11 +314,11 @@ mod tests {
     async fn absent_keyboard_then_connects_and_applies_state() {
         let h = start(2, 0);
         wait(0.5).await;
-        assert!(!*h.connected.borrow());
+        assert!(!h.connected());
         assert!(h.calls().is_empty());
         wait(5.0).await; // backoff 1s + 2s
         assert_eq!(h.opens.load(Ordering::SeqCst), 3);
-        assert!(*h.connected.borrow());
+        assert!(h.connected());
         // first brightness, then the colours (later writes are keepalives of the same frame)
         assert_eq!(h.calls()[..2], [Call::Brightness(100), Call::Zones(vec![Color::WHITE; ZONE_COUNT])]);
     }
@@ -265,10 +327,10 @@ mod tests {
     async fn write_error_drops_device_and_reconnects() {
         let h = start(0, 2); // the first Zones write fails
         wait(0.1).await;
-        assert!(!*h.connected.borrow(), "dropped after the failed write");
+        assert!(!h.connected(), "dropped after the failed write");
         wait(2.0).await;
         assert_eq!(h.opens.load(Ordering::SeqCst), 2);
-        assert!(*h.connected.borrow());
+        assert!(h.connected());
         // first connection got Brightness only; the reconnect re-applied the whole state
         assert_eq!(
             h.calls(),
@@ -333,9 +395,9 @@ mod tests {
     async fn unplug_is_noticed_while_static() {
         let h = start(0, 3); // the first keepalive write fails, as after an unplug
         wait(0.1).await;
-        assert!(*h.connected.borrow());
+        assert!(h.connected());
         wait(2.5).await;
         assert_eq!(h.opens.load(Ordering::SeqCst), 1, "not reopened yet (1 s pause)");
-        assert!(!*h.connected.borrow(), "unplug noticed by the keepalive");
+        assert!(!h.connected(), "unplug noticed by the keepalive");
     }
 }

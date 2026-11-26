@@ -6,7 +6,7 @@ use masterkeys_core::dbus::DaemonProxy;
 #[test]
 fn embedded_core_reports_its_state() {
     let dir = tempfile::tempdir().unwrap();
-    let conn = masterkeysd::embedded::start(dir.path().to_path_buf()).unwrap();
+    let conn = masterkeysd::embedded::start_with(dir.path().to_path_buf(), false).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let report: StateReport = runtime.block_on(async {
         let proxy = DaemonProxy::new(&conn).await.unwrap();

@@ -49,6 +49,7 @@ async fn serve_in(config: &Path) -> Served {
     let core = DaemonCore {
         state: Arc::new(state_tx),
         connected: connected_rx,
+        devices: tokio::sync::watch::channel(Default::default()).1,
         frame: frame.clone(),
         keys: hub.clone(),
         profiles,

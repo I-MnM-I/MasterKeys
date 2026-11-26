@@ -4,8 +4,14 @@
 use crate::app::Daemon;
 use std::path::PathBuf;
 
-/// Start the core on the profiles in `config_dir`; returns the client end of its connection.
+/// Start the core on the profiles in `config_dir`, driving the lighting devices it finds; returns the
+/// client end of its connection.
 pub fn start(config_dir: PathBuf) -> zbus::Result<zbus::Connection> {
+    start_with(config_dir, true)
+}
+
+/// `start`, with `device` deciding whether lighting hardware is driven (tests pass false).
+pub fn start_with(config_dir: PathBuf, device: bool) -> zbus::Result<zbus::Connection> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("masterkeys-core".into())
@@ -18,7 +24,7 @@ pub fn start(config_dir: PathBuf) -> zbus::Result<zbus::Connection> {
                 let daemon = Daemon::load(&config_dir);
                 match crate::p2p::pair(daemon.service()).await {
                     Ok((server, client)) => {
-                        daemon.spawn_tasks(server, false);
+                        daemon.spawn_tasks(server, device);
                         let _ = tx.send(Ok(client));
                         std::future::pending::<()>().await
                     }
