@@ -36,7 +36,7 @@ The daemon crate's library (`DaemonCore`, `DaemonService`, the engine, profiles 
 
 ### Platform seams (Windows side)
 
-- **Key input:** a `WH_KEYBOARD_LL` hook on a dedicated thread with a message loop. It turns hook events into the same `KeyEvent`s the engine consumes, and it swallows a key only when the current bindings remap it or it starts a macro. Everything else passes through. The escape chord (both Ctrls + both Shifts for 2 s) is detected the same way it is on Linux.
+- **Key input:** a `WH_KEYBOARD_LL` hook on a dedicated thread with a message loop. It turns hook events into the same `KeyEvent`s the engine consumes. While the profile has bindings, it works like the Linux grab: it swallows every physical key and replays it through the engine, so unbound keys come out unchanged and the escape chord is seen. If the core stops answering (heartbeat older than 1 s), the hook passes keys straight through, so the keyboard never goes dead. With no bindings, nothing is swallowed. The escape chord (both Ctrls + both Shifts for 2 s) is detected the same way it is on Linux.
 - **Key output:** `SendInput` with scan codes. Injected events carry a marker in `dwExtraInfo` so the hook ignores its own output.
 - **Key codes:** a table maps Windows scan codes (including extended keys) to the evdev codes the engine and layout already use, in both directions. Unknown codes pass through untouched.
 - **Running programs:** `CreateToolhelp32Snapshot` + `QueryFullProcessImageNameW` fill `ProcessInfo` (exe path; cmdline left empty). The existing `matches` / `display_name` work unchanged.
