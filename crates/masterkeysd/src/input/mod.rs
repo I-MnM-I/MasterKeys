@@ -20,7 +20,7 @@ pub mod backend;
 #[path = "windows.rs"]
 pub mod backend;
 
-const EV_KEY: u16 = 1;
+pub(crate) const EV_KEY: u16 = 1;
 /// How long to wait for held keys (e.g. Enter that switched profile) to come up before grabbing.
 const RELEASE_WAIT: Duration = Duration::from_secs(5);
 /// How often to look for the keyboard again after it went away.

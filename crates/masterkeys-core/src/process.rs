@@ -41,11 +41,19 @@ pub fn display_name(p: &ProcessInfo) -> Option<String> {
 }
 
 /// The processes this user can read; others are skipped.
+#[cfg(windows)]
+pub fn running() -> Vec<ProcessInfo> {
+    windows::running()
+}
+
+/// The processes this user can read; others are skipped.
+#[cfg(not(windows))]
 pub fn running() -> Vec<ProcessInfo> {
     let Ok(entries) = std::fs::read_dir("/proc") else { return Vec::new() };
     entries.flatten().filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok()).filter_map(read).collect()
 }
 
+#[cfg(not(windows))]
 fn read(pid: u32) -> Option<ProcessInfo> {
     let base = format!("/proc/{pid}");
     let stat = std::fs::read_to_string(format!("{base}/stat")).ok()?;
@@ -61,6 +69,64 @@ fn read(pid: u32) -> Option<ProcessInfo> {
         .map(|a| String::from_utf8_lossy(a).into_owned())
         .collect();
     Some(ProcessInfo { pid, start, exe, cmdline })
+}
+
+#[cfg(windows)]
+mod windows {
+    use super::ProcessInfo;
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+
+    pub fn running() -> Vec<ProcessInfo> {
+        let mut out = Vec::new();
+        // SAFETY: Toolhelp snapshot walk with a correctly sized entry; the handle is closed after.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return out;
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+            let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+            while more {
+                if let Some(p) = read(entry.th32ProcessID) {
+                    out.push(p);
+                }
+                more = Process32NextW(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+        }
+        out
+    }
+
+    /// Exe path and start time, if this user may query the process.
+    fn read(pid: u32) -> Option<ProcessInfo> {
+        // SAFETY: the handle is checked and closed; buffers are sized for the calls.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut buf = [0u16; 1024];
+            let mut len = buf.len() as u32;
+            let exe = (QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0)
+                .then(|| String::from_utf16_lossy(&buf[..len as usize]));
+            let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+            let start = if GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0 {
+                (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+            } else {
+                0
+            };
+            CloseHandle(handle);
+            Some(ProcessInfo { pid, start, exe, cmdline: Vec::new() })
+        }
+    }
 }
 
 #[cfg(test)]

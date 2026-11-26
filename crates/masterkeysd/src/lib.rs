@@ -8,6 +8,7 @@ pub mod embedded;
 pub mod engine;
 pub mod winkeys;
 pub mod gamesense;
+pub mod hookrules;
 pub mod input;
 pub mod keys;
 pub mod output;

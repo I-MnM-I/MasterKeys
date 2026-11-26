@@ -2822,6 +2822,7 @@ dependencies = [
  "steelseries-gg",
  "tempfile",
  "toml",
+ "windows-sys 0.59.0",
  "zbus 6.2.1",
 ]
 
@@ -2838,6 +2839,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
  "zbus 6.2.1",
 ]
 

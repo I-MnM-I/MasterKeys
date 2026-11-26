@@ -21,6 +21,9 @@ zbus = { version = "6.2.1", default-features = false, features = ["tokio", "serv
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = { version = "0.13", features = ["tokio"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 zbus = { version = "6.2.1", default-features = false, features = ["tokio", "service", "proxy", "p2p"] }
