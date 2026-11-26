@@ -3244,7 +3244,7 @@ dependencies = [
 
 [[package]]
 name = "masterkeys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "ksni",
@@ -3270,7 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "masterkeys-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3283,7 +3283,7 @@ dependencies = [
 
 [[package]]
 name = "masterkeysd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "evdev",
  "futures-util",
