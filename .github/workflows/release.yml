@@ -2,6 +2,8 @@ name: Release
 on:
   push:
     tags: ['v*']
+    # A push here builds the zip without publishing (download it from the run's artifacts).
+    branches: ['release-dry-run']
   workflow_dispatch:
 permissions:
   contents: write
