@@ -82,7 +82,7 @@ async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut 
         let overlay = *shared.overlay.borrow_and_update();
         let shown: [Color; ZONE_COUNT] =
             std::array::from_fn(|i| overlay[i].unwrap_or(frame.get(i).copied().unwrap_or(Color::BLACK)));
-        if let Err(e) = device.set_zones(&shown) {
+        if let Err(e) = device.write(&shown) {
             return e;
         }
         *shared.frame.lock().unwrap() = frame;
@@ -141,7 +141,7 @@ mod tests {
 
     #[derive(Clone, Debug, PartialEq)]
     enum Call {
-        Zones([Color; ZONE_COUNT]),
+        Zones(Vec<Color>),
         Brightness(u8),
     }
 
@@ -150,10 +150,11 @@ mod tests {
         calls: Arc<Mutex<Vec<Call>>>,
         writes: Arc<AtomicUsize>,
         fail_at: usize,
+        info: masterkeys_core::devices::DeviceInfo,
     }
 
     impl Fake {
-        fn write(&mut self, call: Call) -> steelseries_gg::Result<()> {
+        fn record(&mut self, call: Call) -> steelseries_gg::Result<()> {
             if self.writes.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_at {
                 return Err(steelseries_gg::Error::DeviceCommunication("unplugged".into()));
             }
@@ -163,11 +164,14 @@ mod tests {
     }
 
     impl Lighting for Fake {
-        fn set_zones(&mut self, c: &[Color; ZONE_COUNT]) -> steelseries_gg::Result<()> {
-            self.write(Call::Zones(*c))
+        fn info(&self) -> &masterkeys_core::devices::DeviceInfo {
+            &self.info
+        }
+        fn write(&mut self, c: &[Color]) -> steelseries_gg::Result<()> {
+            self.record(Call::Zones(c.to_vec()))
         }
         fn set_brightness(&mut self, p: u8) -> steelseries_gg::Result<()> {
-            self.write(Call::Brightness(p))
+            self.record(Call::Brightness(p))
         }
     }
 
@@ -201,7 +205,7 @@ mod tests {
             if o.fetch_add(1, Ordering::SeqCst) < fail_opens {
                 return Err(steelseries_gg::Error::DeviceNotFound("absent".into()));
             }
-            Ok(Box::new(Fake { calls: c.clone(), writes: w.clone(), fail_at }) as Box<dyn Lighting>)
+            Ok(Box::new(Fake { calls: c.clone(), writes: w.clone(), fail_at, info: masterkeys_core::devices::DeviceInfo::apex3() }) as Box<dyn Lighting>)
         });
         let (overlay_tx, overlay_rx) = watch::channel([None; ZONE_COUNT]);
         let frame = Arc::new(Mutex::new(vec![Color::BLACK; ZONE_COUNT]));
@@ -221,11 +225,11 @@ mod tests {
         wait(0.1).await;
         let mut want = [Color::WHITE; ZONE_COUNT];
         want[2] = Color::RED;
-        assert_eq!(h.calls().last(), Some(&Call::Zones(want)));
+        assert_eq!(h.calls().last(), Some(&Call::Zones(want.to_vec())));
         assert_eq!(*h.frame.lock().unwrap(), vec![Color::WHITE; ZONE_COUNT], "frame keeps the profile's colours");
         h.overlay.send_replace([None; ZONE_COUNT]);
         wait(0.1).await;
-        assert_eq!(h.calls().last(), Some(&Call::Zones([Color::WHITE; ZONE_COUNT])));
+        assert_eq!(h.calls().last(), Some(&Call::Zones(vec![Color::WHITE; ZONE_COUNT])));
     }
 
     #[tokio::test]
@@ -254,7 +258,7 @@ mod tests {
         assert_eq!(h.opens.load(Ordering::SeqCst), 3);
         assert!(*h.connected.borrow());
         // first brightness, then the colours (later writes are keepalives of the same frame)
-        assert_eq!(h.calls()[..2], [Call::Brightness(100), Call::Zones([Color::WHITE; ZONE_COUNT])]);
+        assert_eq!(h.calls()[..2], [Call::Brightness(100), Call::Zones(vec![Color::WHITE; ZONE_COUNT])]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -268,7 +272,7 @@ mod tests {
         // first connection got Brightness only; the reconnect re-applied the whole state
         assert_eq!(
             h.calls(),
-            vec![Call::Brightness(100), Call::Brightness(100), Call::Zones([Color::WHITE; ZONE_COUNT])]
+            vec![Call::Brightness(100), Call::Brightness(100), Call::Zones(vec![Color::WHITE; ZONE_COUNT])]
         );
     }
 
@@ -278,7 +282,7 @@ mod tests {
         wait(0.1).await;
         h.state.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, brightness: 100, ..Default::default() });
         wait(0.1).await;
-        assert_eq!(h.calls().last(), Some(&Call::Zones([Color::RED; ZONE_COUNT])));
+        assert_eq!(h.calls().last(), Some(&Call::Zones(vec![Color::RED; ZONE_COUNT])));
         assert_eq!(h.count(|c| matches!(c, Call::Brightness(_))), 1);
         h.state.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, brightness: 30, ..Default::default() });
         wait(0.1).await;

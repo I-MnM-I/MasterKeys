@@ -40,8 +40,14 @@ pub fn brightness_report(percent: u8) -> Result<[u8; REPORT_LEN]> {
 }
 
 /// Whether a HID interface is the Apex 3's lighting control interface (never the typing or media ones).
-pub fn is_apex3_control(vendor: u16, product: u16, interface: i32) -> bool {
-    vendor == STEELSERIES_VENDOR_ID && product == PRODUCT_ID && interface == CONTROL_INTERFACE
+///
+/// Windows lists several collections on interface 3, so the vendor usage page 0xFFC0 must match when the
+/// platform reports one; Linux hidraw may report 0.
+pub fn is_apex3_control(vendor: u16, product: u16, interface: i32, usage_page: u16) -> bool {
+    vendor == STEELSERIES_VENDOR_ID
+        && product == PRODUCT_ID
+        && interface == CONTROL_INTERFACE
+        && matches!(usage_page, 0 | 0xFFC0)
 }
 
 fn not_found() -> Error {
@@ -69,7 +75,7 @@ impl Apex3Device {
         let api = HidApi::new()?;
         let info = api
             .device_list()
-            .find(|d| is_apex3_control(d.vendor_id(), d.product_id(), d.interface_number()))
+            .find(|d| is_apex3_control(d.vendor_id(), d.product_id(), d.interface_number(), d.usage_page()))
             .ok_or_else(not_found)?;
         let device = info.open_device(&api).map_err(|e| open_error(e.to_string()))?;
         Ok(Self { device })
@@ -131,12 +137,19 @@ mod tests {
 
     #[test]
     fn only_interface_3_of_apex3_selected() {
-        assert!(is_apex3_control(0x1038, 0x161A, 3));
+        assert!(is_apex3_control(0x1038, 0x161A, 3, 0xFFC0));
         for i in 0..3 {
-            assert!(!is_apex3_control(0x1038, 0x161A, i));
+            assert!(!is_apex3_control(0x1038, 0x161A, i, 0xFFC0));
         }
-        assert!(!is_apex3_control(0x1038, 0x1622, 3));
-        assert!(!is_apex3_control(0x046D, 0x161A, 3));
+        assert!(!is_apex3_control(0x1038, 0x1622, 3, 0xFFC0));
+        assert!(!is_apex3_control(0x046D, 0x161A, 3, 0xFFC0));
+    }
+
+    #[test]
+    fn apex3_control_needs_vendor_page_when_reported() {
+        assert!(is_apex3_control(0x1038, 0x161A, 3, 0xFFC0));
+        assert!(is_apex3_control(0x1038, 0x161A, 3, 0));
+        assert!(!is_apex3_control(0x1038, 0x161A, 3, 0x000C));
     }
 
     #[test]

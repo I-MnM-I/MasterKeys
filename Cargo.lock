@@ -3287,6 +3287,7 @@ version = "0.2.0"
 dependencies = [
  "evdev",
  "futures-util",
+ "hidapi",
  "masterkeys-core",
  "serde_json",
  "steelseries-gg",

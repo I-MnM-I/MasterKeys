@@ -20,8 +20,10 @@ zbus = { version = "6.2.1", default-features = false, features = ["tokio", "serv
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = { version = "0.13", features = ["tokio"] }
+hidapi = { version = "=2.6.7", default-features = false, features = ["linux-native-basic-udev"] }
 
 [target.'cfg(windows)'.dependencies]
+hidapi = { version = "=2.6.7", default-features = false, features = ["windows-native"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]

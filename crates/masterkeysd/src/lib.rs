@@ -15,4 +15,5 @@ pub mod output;
 pub mod p2p;
 pub mod persist;
 pub mod profiles;
+pub mod redragon;
 pub mod service;
