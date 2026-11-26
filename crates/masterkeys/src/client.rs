@@ -85,6 +85,20 @@ pub fn spawn(on_event: impl Fn(Event) + Send + Sync + 'static) -> mpsc::Unbounde
     tx
 }
 
+/// Start the client thread on a connection that is already open (the Windows app's in-process core).
+/// That core never restarts, so if the connection ends the client reports it and stops.
+pub fn spawn_on(conn: zbus::Connection, on_event: impl Fn(Event) + Send + Sync + 'static) -> mpsc::UnboundedSender<Command> {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
+        runtime.block_on(async move {
+            run_on(conn, &on_event, &mut rx, &mut true).await;
+            on_event(Event::Error("the app's core stopped; restart MasterKeys".into()));
+        });
+    });
+    tx
+}
+
 async fn daemon_present(conn: &zbus::Connection) -> bool {
     match zbus::fdo::DBusProxy::new(conn).await {
         Ok(dbus) => dbus.name_has_owner(BUS_NAME.try_into().expect("valid name")).await.unwrap_or(false),

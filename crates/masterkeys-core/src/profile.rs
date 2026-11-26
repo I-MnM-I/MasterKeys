@@ -85,13 +85,21 @@ impl ProfileStore {
         Self { dir: config.join("profiles"), settings: config.join("settings.toml") }
     }
 
-    /// `$XDG_CONFIG_HOME/masterkeys`, else `~/.config/masterkeys`.
+    /// `$XDG_CONFIG_HOME/masterkeys`, else `~/.config/masterkeys`; on Windows `%APPDATA%\MasterKeys`.
     pub fn default_config_dir() -> Option<PathBuf> {
+        if cfg!(windows) {
+            return Self::windows_config_dir(std::env::var_os("APPDATA"));
+        }
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
             .map(|c| c.join("masterkeys"))
+    }
+
+    /// `<appdata>\MasterKeys`, given the value of `%APPDATA%`.
+    pub fn windows_config_dir(appdata: Option<std::ffi::OsString>) -> Option<PathBuf> {
+        appdata.map(|a| PathBuf::from(a).join("MasterKeys"))
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -366,6 +374,15 @@ mod tests {
         let (profiles, warnings) = store.load_all();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["c"]);
+    }
+
+    #[test]
+    fn windows_config_dir_is_under_appdata() {
+        assert_eq!(
+            ProfileStore::windows_config_dir(Some(r"C:\x".into())),
+            Some(PathBuf::from(r"C:\x").join("MasterKeys"))
+        );
+        assert_eq!(ProfileStore::windows_config_dir(None), None);
     }
 
     #[cfg(unix)]

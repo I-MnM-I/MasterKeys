@@ -1,4 +1,5 @@
 //! MasterKeys: control panel for the SteelSeries Apex 3 (talks to masterkeysd).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 slint::include_modules!();
 
@@ -317,9 +318,23 @@ fn main() -> Result<(), slint::PlatformError> {
     };
     let ui = MainWindow::new()?;
     let (event_tx, event_rx) = mpsc::channel();
-    let commands = client::spawn(move |event| {
+    let on_event = move |event| {
         let _ = event_tx.send(event);
-    });
+    };
+    #[cfg(windows)]
+    let commands = {
+        // No service on Windows: the core runs in this process.
+        let dir = masterkeys_core::profile::ProfileStore::default_config_dir().unwrap_or_else(|| ".".into());
+        match masterkeysd::embedded::start(dir) {
+            Ok(conn) => client::spawn_on(conn, on_event),
+            Err(e) => {
+                ui.set_error_text(format!("MasterKeys could not start: {e}").into());
+                tokio::sync::mpsc::unbounded_channel().0
+            }
+        }
+    };
+    #[cfg(not(windows))]
+    let commands = client::spawn(on_event);
 
     let layout = Layout::apex3_ansi();
     ui.set_board_width(layout.width());
