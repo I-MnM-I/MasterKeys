@@ -43,7 +43,7 @@ impl Daemon {
         let core = DaemonCore {
             state: Arc::new(state_tx),
             connected: connected_rx,
-            frame: Arc::new(Mutex::new([Color::BLACK; ZONE_COUNT])),
+            frame: Arc::new(Mutex::new(vec![Color::BLACK; ZONE_COUNT])),
             keys,
             profiles: profiles.clone(),
             dirty: Arc::new(dirty_tx),

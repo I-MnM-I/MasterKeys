@@ -18,7 +18,7 @@ struct Served {
     proxy: DaemonProxy<'static>,
     state: watch::Receiver<LightingState>,
     connected: watch::Sender<bool>,
-    frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
+    frame: Arc<Mutex<Vec<Color>>>,
     keys: mpsc::Sender<(u16, bool)>,
     want_reader: watch::Receiver<bool>,
     bindings: watch::Receiver<masterkeys_core::bindings::Compiled>,
@@ -40,7 +40,7 @@ async fn serve_in(config: &Path) -> Served {
     let (profiles, _warnings) = load_profiles(&store);
     let (state_tx, state_rx) = watch::channel(profiles.active().lighting.clone());
     let (connected_tx, connected_rx) = watch::channel(false);
-    let frame = Arc::new(Mutex::new([Color::WHITE; ZONE_COUNT]));
+    let frame = Arc::new(Mutex::new(vec![Color::WHITE; ZONE_COUNT]));
     let (hub, want_reader) = KeyHub::new();
     let (keys_tx, keys_rx) = mpsc::channel(16);
     let (dirty_tx, dirty_rx) = watch::channel(1u64);
@@ -84,13 +84,13 @@ async fn set_all_color_updates_state() {
 async fn set_zone_color_during_animation_freezes_the_shown_frame() {
     let s = serve().await;
     s.proxy.set_effect(r#"{"Spectrum":{"speed":1.0}}"#).await.unwrap();
-    *s.frame.lock().unwrap() = [Color::BLUE; ZONE_COUNT];
+    *s.frame.lock().unwrap() = vec![Color::BLUE; ZONE_COUNT];
     s.proxy.set_zone_color(3, "00ff00").await.unwrap();
     let mut want = vec![Color::BLUE; ZONE_COUNT];
     want[3] = Color::GREEN;
     assert_eq!(s.state.borrow().effect, Effect::Custom { colors: want.clone() });
     // a second zone edits the existing Custom, not the frame
-    *s.frame.lock().unwrap() = [Color::BLACK; ZONE_COUNT];
+    *s.frame.lock().unwrap() = vec![Color::BLACK; ZONE_COUNT];
     s.proxy.set_zone_color(0, "ff0000").await.unwrap();
     want[0] = Color::RED;
     assert_eq!(s.state.borrow().effect, Effect::Custom { colors: want });
@@ -140,7 +140,7 @@ async fn get_state_reports_connection() {
 async fn set_zone_color_right_after_a_colour_change_uses_the_new_colour() {
     // The output loop hasn't sent red yet, so the last frame is still black.
     let s = serve().await;
-    *s.frame.lock().unwrap() = [Color::BLACK; ZONE_COUNT];
+    *s.frame.lock().unwrap() = vec![Color::BLACK; ZONE_COUNT];
     s.proxy.set_all_color("ff0000").await.unwrap();
     s.proxy.set_zone_color(0, "00ff00").await.unwrap();
     let mut want = vec![Color::RED; ZONE_COUNT];

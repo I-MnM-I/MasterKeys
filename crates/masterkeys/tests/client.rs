@@ -25,7 +25,7 @@ struct Harness {
 async fn start() -> Harness {
     let (state_tx, state_rx) = watch::channel(LightingState::default());
     let (connected_tx, connected_rx) = watch::channel(false);
-    let frame = Arc::new(Mutex::new([Color::WHITE; ZONE_COUNT]));
+    let frame = Arc::new(Mutex::new(vec![Color::WHITE; ZONE_COUNT]));
     let (hub, _want) = KeyHub::new();
     let (keys_tx, keys_rx) = mpsc::channel(16);
     let config = tempfile::tempdir().unwrap();

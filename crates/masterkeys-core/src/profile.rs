@@ -54,6 +54,8 @@ struct ProfileFile {
     remaps: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     macros: BTreeMap<String, Macro>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    custom: BTreeMap<String, BTreeMap<u16, Color>>,
 }
 
 /// The format written by the earlier CLI draft: ten zone colours.
@@ -152,6 +154,7 @@ impl ProfileStore {
             effect: profile.lighting.effect.clone(),
             remaps: profile.remaps.clone(),
             macros: profile.macros.clone(),
+            custom: profile.lighting.custom.clone(),
         };
         let text = toml::to_string(&file).map_err(io::Error::other)?;
         write_private(&self.path(&profile.name), &text)
@@ -190,7 +193,7 @@ fn load_file(path: &Path) -> io::Result<Profile> {
     if let Ok(f) = toml::from_str::<ProfileFile>(&text) {
         return Ok(Profile {
             name: f.name,
-            lighting: LightingState { effect: f.effect, brightness: f.brightness },
+            lighting: LightingState { effect: f.effect, brightness: f.brightness, custom: f.custom },
             executables: f.executables,
             remaps: canonical_remaps(f.remaps),
             macros: f.macros.into_iter().map(|(k, m)| (canonical_key(&k).unwrap_or(k), m)).collect(),
@@ -199,7 +202,7 @@ fn load_file(path: &Path) -> io::Result<Profile> {
     match toml::from_str::<LegacyFile>(&text) {
         Ok(f) => Ok(Profile {
             name: f.name,
-            lighting: LightingState { effect: Effect::Custom { colors: f.zones }, brightness: f.brightness },
+            lighting: LightingState { effect: Effect::Custom { colors: f.zones }, brightness: f.brightness, ..Default::default() },
             ..Profile::default()
         }),
         // Report the error for the current format, which is what a hand edit is aiming at.
@@ -249,7 +252,7 @@ mod tests {
     fn custom(name: &str) -> Profile {
         Profile {
             name: name.into(),
-            lighting: LightingState { effect: Effect::Custom { colors: vec![Color::RED; 10] }, brightness: 60 },
+            lighting: LightingState { effect: Effect::Custom { colors: vec![Color::RED; 10] }, brightness: 60, ..Default::default() },
             executables: vec!["eldenring.exe".into(), "factorio".into()],
             ..Profile::default()
         }
@@ -310,6 +313,18 @@ mod tests {
     }
 
     #[test]
+    fn per_key_colours_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProfileStore::new(dir.path());
+        let mut p = custom("Keys");
+        p.lighting.custom.insert("k745pro".into(), BTreeMap::from([(0u16, Color::RED), (35, Color::BLUE)]));
+        store.save(&p).unwrap();
+        let (profiles, warnings) = store.load_all();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(profiles, vec![p]);
+    }
+
+    #[test]
     fn legacy_file_loads_as_custom() {
         let dir = tempfile::tempdir().unwrap();
         let store = ProfileStore::new(dir.path());
@@ -326,7 +341,7 @@ mod tests {
             profiles,
             vec![Profile {
                 name: "gaming".into(),
-                lighting: LightingState { effect: Effect::Custom { colors: want }, brightness: 80 },
+                lighting: LightingState { effect: Effect::Custom { colors: want }, brightness: 80, ..Default::default() },
                 ..Profile::default()
             }]
         );

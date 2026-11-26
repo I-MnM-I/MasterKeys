@@ -19,7 +19,7 @@ pub struct Shared {
     pub state: watch::Receiver<LightingState>,
     pub connected: watch::Sender<bool>,
     /// The frame last sent, for `SetZoneColor`.
-    pub frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
+    pub frame: Arc<Mutex<Vec<Color>>>,
     /// GameSense colours laid over the frame (zones that are `None` show the profile).
     pub overlay: watch::Receiver<crate::gamesense::OverlayFrame>,
 }
@@ -37,7 +37,7 @@ impl Backoff {
 
 /// Run forever: keep the keyboard showing the wanted state.
 pub async fn run(mut opener: Opener, mut shared: Shared, backoff: Backoff) {
-    let mut renderer = Renderer::new();
+    let mut renderer = Renderer::new(&masterkeys_core::devices::DeviceInfo::apex3());
     loop {
         let mut device = connect(&mut opener, backoff).await;
         shared.connected.send_replace(true);
@@ -80,7 +80,8 @@ async fn drive(device: &mut dyn Lighting, renderer: &mut Renderer, shared: &mut 
     loop {
         let frame = renderer.frame();
         let overlay = *shared.overlay.borrow_and_update();
-        let shown: [Color; ZONE_COUNT] = std::array::from_fn(|i| overlay[i].unwrap_or(frame[i]));
+        let shown: [Color; ZONE_COUNT] =
+            std::array::from_fn(|i| overlay[i].unwrap_or(frame.get(i).copied().unwrap_or(Color::BLACK)));
         if let Err(e) = device.set_zones(&shown) {
             return e;
         }
@@ -176,7 +177,7 @@ mod tests {
         state: watch::Sender<LightingState>,
         connected: watch::Receiver<bool>,
         overlay: watch::Sender<crate::gamesense::OverlayFrame>,
-        frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
+        frame: Arc<Mutex<Vec<Color>>>,
     }
 
     impl Harness {
@@ -203,7 +204,7 @@ mod tests {
             Ok(Box::new(Fake { calls: c.clone(), writes: w.clone(), fail_at }) as Box<dyn Lighting>)
         });
         let (overlay_tx, overlay_rx) = watch::channel([None; ZONE_COUNT]);
-        let frame = Arc::new(Mutex::new([Color::BLACK; ZONE_COUNT]));
+        let frame = Arc::new(Mutex::new(vec![Color::BLACK; ZONE_COUNT]));
         let shared = Shared { state: state_rx, connected: connected_tx, frame: frame.clone(), overlay: overlay_rx };
         tokio::spawn(run(opener, shared, Backoff::DEFAULT));
         Harness { calls, opens, state: state_tx, connected: connected_rx, overlay: overlay_tx, frame }
@@ -212,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn overlay_is_laid_over_frame() {
         let h = start(0, 0);
-        h.state.send_replace(LightingState { effect: Effect::Static { color: Color::WHITE }, brightness: 100 });
+        h.state.send_replace(LightingState { effect: Effect::Static { color: Color::WHITE }, brightness: 100, ..Default::default() });
         wait(0.1).await;
         let mut overlay = [None; ZONE_COUNT];
         overlay[2] = Some(Color::RED);
@@ -221,7 +222,7 @@ mod tests {
         let mut want = [Color::WHITE; ZONE_COUNT];
         want[2] = Color::RED;
         assert_eq!(h.calls().last(), Some(&Call::Zones(want)));
-        assert_eq!(*h.frame.lock().unwrap(), [Color::WHITE; ZONE_COUNT], "frame keeps the profile's colours");
+        assert_eq!(*h.frame.lock().unwrap(), vec![Color::WHITE; ZONE_COUNT], "frame keeps the profile's colours");
         h.overlay.send_replace([None; ZONE_COUNT]);
         wait(0.1).await;
         assert_eq!(h.calls().last(), Some(&Call::Zones([Color::WHITE; ZONE_COUNT])));
@@ -275,11 +276,11 @@ mod tests {
     async fn state_change_resends_frame_and_only_changed_brightness() {
         let h = start(0, 0);
         wait(0.1).await;
-        h.state.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, brightness: 100 });
+        h.state.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, brightness: 100, ..Default::default() });
         wait(0.1).await;
         assert_eq!(h.calls().last(), Some(&Call::Zones([Color::RED; ZONE_COUNT])));
         assert_eq!(h.count(|c| matches!(c, Call::Brightness(_))), 1);
-        h.state.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, brightness: 30 });
+        h.state.send_replace(LightingState { effect: Effect::Static { color: Color::RED }, brightness: 30, ..Default::default() });
         wait(0.1).await;
         assert!(h.calls().contains(&Call::Brightness(30)));
         assert_eq!(h.count(|c| matches!(c, Call::Brightness(_))), 2);
@@ -290,7 +291,7 @@ mod tests {
         let h = start(0, 0);
         wait(0.1).await;
         for b in 51..=100u8 {
-            h.state.send_replace(LightingState { effect: Effect::Off, brightness: b - 50 });
+            h.state.send_replace(LightingState { effect: Effect::Off, brightness: b - 50, ..Default::default() });
         }
         wait(0.1).await;
         let brightness: Vec<_> = h.calls().into_iter().filter_map(|c| match c {
@@ -305,7 +306,7 @@ mod tests {
     async fn animation_sends_frames_on_a_timer() {
         let h = start(0, 0);
         wait(0.1).await;
-        h.state.send_replace(LightingState { effect: Effect::Spectrum { speed: 1.0 }, brightness: 100 });
+        h.state.send_replace(LightingState { effect: Effect::Spectrum { speed: 1.0 }, brightness: 100, ..Default::default() });
         wait(0.01).await;
         let before = h.count(|c| matches!(c, Call::Zones(_)));
         wait(1.0).await;

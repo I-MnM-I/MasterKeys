@@ -379,7 +379,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let app = Rc::new(RefCell::new(App {
         layout,
-        renderer: Renderer::new(),
+        renderer: Renderer::new(&masterkeys_core::devices::DeviceInfo::apex3()),
         state: LightingState::default(),
         pressed: HashSet::new(),
         selected_zone: None,

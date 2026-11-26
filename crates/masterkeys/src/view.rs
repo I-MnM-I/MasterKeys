@@ -9,9 +9,10 @@ use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::Color;
 
 /// Each key's preview colour, in layout order: its zone's colour scaled by brightness (0-100).
-pub fn key_colors(layout: &Layout, frame: &[Color; ZONE_COUNT], brightness: u8) -> Vec<Color> {
+pub fn key_colors(layout: &Layout, frame: &[Color], brightness: u8) -> Vec<Color> {
     let scale = f32::from(brightness.min(100)) / 100.0;
-    layout.keys.iter().map(|k| frame[usize::from(k.zone).min(ZONE_COUNT - 1)].scale(scale)).collect()
+    let zone = |z: u8| frame.get(usize::from(z).min(ZONE_COUNT - 1)).copied().unwrap_or(Color::BLACK);
+    layout.keys.iter().map(|k| zone(k.zone).scale(scale)).collect()
 }
 
 /// The key name bindings use for an evdev code, if the key can be remapped.

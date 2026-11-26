@@ -44,7 +44,7 @@ pub struct DaemonCore {
     /// What the output loop shows; always the active profile's lighting.
     pub state: Arc<watch::Sender<LightingState>>,
     pub connected: watch::Receiver<bool>,
-    pub frame: Arc<Mutex<[Color; ZONE_COUNT]>>,
+    pub frame: Arc<Mutex<Vec<Color>>>,
     pub keys: KeyHub,
     pub profiles: Arc<Mutex<Profiles>>,
     /// Bumped on every change the saver should write.
@@ -195,10 +195,10 @@ impl DaemonService {
     /// What the current state shows: rendered directly when it doesn't animate (the output loop may not
     /// have sent it yet), otherwise the frame last sent.
     fn shown_colors(&self) -> Vec<Color> {
-        let mut renderer = Renderer::new();
+        let mut renderer = Renderer::new(&masterkeys_core::devices::DeviceInfo::apex3());
         renderer.set_state(&self.core.state.borrow());
         if renderer.next_frame_in().is_none() {
-            renderer.frame().to_vec()
+            renderer.frame()
         } else {
             self.core.frame.lock().unwrap().to_vec()
         }

@@ -348,7 +348,7 @@ mod tests {
         let mut p = three();
         p.activate("Elden").unwrap();
         p.take_pending();
-        let red = LightingState { effect: Effect::Static { color: Color::RED }, brightness: 50 };
+        let red = LightingState { effect: Effect::Static { color: Color::RED }, brightness: 50, ..Default::default() };
         p.set_lighting(red.clone());
         assert_eq!(p.active().lighting, red);
         assert_eq!(p.list().iter().find(|x| x.name == "Default").unwrap().lighting, LightingState::default());
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn create_copies_current_lighting() {
         let mut p = three();
-        let blue = LightingState { effect: Effect::Static { color: Color::BLUE }, brightness: 30 };
+        let blue = LightingState { effect: Effect::Static { color: Color::BLUE }, brightness: 30, ..Default::default() };
         p.set_lighting(blue.clone());
         p.create("Night").unwrap();
         assert_eq!(p.active().name, "Default", "create does not activate");

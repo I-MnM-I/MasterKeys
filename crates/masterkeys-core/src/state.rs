@@ -4,8 +4,12 @@
 //! live in exactly one place.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use steelseries_gg::apex3::ZONE_COUNT;
 use steelseries_gg::rgb::{Color, Effect};
+
+/// Highest LED count of any supported device's frame.
+pub const MAX_LEDS: u16 = 126;
 
 /// What the keyboard should show.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -13,11 +17,15 @@ pub struct LightingState {
     pub effect: Effect,
     /// Hardware brightness, 0-100.
     pub brightness: u8,
+    /// Per-key custom colours for devices other than the Apex 3: device id, then LED index. Shown
+    /// while the effect is `Custom` (whose `colors` stay the Apex 3's ten zones).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom: BTreeMap<String, BTreeMap<u16, Color>>,
 }
 
 impl Default for LightingState {
     fn default() -> Self {
-        Self { effect: Effect::Static { color: Color::WHITE }, brightness: 100 }
+        Self { effect: Effect::Static { color: Color::WHITE }, brightness: 100, custom: BTreeMap::new() }
     }
 }
 
@@ -26,6 +34,11 @@ impl LightingState {
     pub fn validate(&self) -> Result<(), String> {
         if self.brightness > 100 {
             return Err(format!("brightness must be 0-100, got {}", self.brightness));
+        }
+        if let Some((id, led)) =
+            self.custom.iter().find_map(|(id, leds)| leds.keys().find(|&&l| l >= MAX_LEDS).map(|l| (id, *l)))
+        {
+            return Err(format!("{id}: LED {led} is out of range (0-{})", MAX_LEDS - 1));
         }
         match &self.effect {
             Effect::Custom { colors } if colors.len() != ZONE_COUNT => {
@@ -118,7 +131,7 @@ mod tests {
 
     #[test]
     fn json_round_trip() {
-        let s = LightingState { effect: Effect::Custom { colors: vec![Color::RED; 10] }, brightness: 40 };
+        let s = LightingState { effect: Effect::Custom { colors: vec![Color::RED; 10] }, brightness: 40, ..Default::default() };
         let back: LightingState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
     }
@@ -146,11 +159,34 @@ mod tests {
 
     #[test]
     fn validate_rejects_bad_states() {
-        let bad = |effect, brightness| LightingState { effect, brightness }.validate().is_err();
+        let bad = |effect, brightness| LightingState { effect, brightness, ..Default::default() }.validate().is_err();
         assert!(bad(Effect::Off, 101));
         assert!(bad(Effect::Custom { colors: vec![Color::RED; 3] }, 50));
         assert!(bad(Effect::Reactive { color: Color::RED, duration: 1.0 }, 50));
         assert!(LightingState::default().validate().is_ok());
+    }
+
+    #[test]
+    fn old_profile_loads_and_new_keeps_old_fields() {
+        let old = serde_json::to_string(&serde_json::json!({
+            "effect": {"Custom": {"colors": vec![Color::RED; 10]}}, "brightness": 80
+        }))
+        .unwrap();
+        let s: LightingState = serde_json::from_str(&old).unwrap();
+        assert!(s.custom.is_empty());
+        assert_eq!(s.effect, Effect::Custom { colors: vec![Color::RED; 10] });
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(v.get("custom").is_none(), "{v}");
+        assert_eq!(v["brightness"], 80);
+    }
+
+    #[test]
+    fn custom_rejects_out_of_range_led() {
+        let mut s = LightingState::default();
+        s.custom.insert("k745pro".into(), BTreeMap::from([(126u16, Color::RED)]));
+        assert!(s.validate().is_err());
+        s.custom.insert("k745pro".into(), BTreeMap::from([(125u16, Color::RED)]));
+        assert!(s.validate().is_ok());
     }
 
     #[test]
